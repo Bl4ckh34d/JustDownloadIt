@@ -18,6 +18,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+cookies.txt
+cookie.txt
 
 # IDE
 .idea/
