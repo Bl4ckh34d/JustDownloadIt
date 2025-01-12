@@ -13,6 +13,7 @@ from utils.errors import (
     FileSystemError, InvalidURLError, UnsupportedURLError
 )
 from utils.logger import DownloaderLogger
+from utils.file_utils import sanitize_filename
 from ..config import Config
 
 class DownloaderLogger:
@@ -49,6 +50,7 @@ class Downloader:
         self._cancelled = False
         self._lock = threading.Lock()
         self.logger = DownloaderLogger.get_logger()
+        self._completion_callback = None
         
     def _validate_url(self, url: str) -> None:
         """Validate URL format and scheme
@@ -85,6 +87,14 @@ class Downloader:
     def set_progress_callback(self, callback: Callable) -> None:
         """Set progress callback function"""
         self._progress_callback = callback
+    
+    def set_completion_callback(self, callback: Callable[[str], None]) -> None:
+        """Set completion callback function
+        
+        Args:
+            callback: Function to call when download completes, takes download_id as argument
+        """
+        self._completion_callback = callback
     
     def start(self) -> None:
         """Start the download"""
@@ -138,6 +148,7 @@ class Downloader:
                     filename = dest_path.name  # Get just the filename
                     if not filename:
                         filename = "download"
+                    filename = sanitize_filename(filename)  # Sanitize the filename
                     
                     self._progress_callback(
                         self.download_id,
@@ -158,6 +169,7 @@ class Downloader:
                     filename = dest_path.name
                     if not filename:
                         filename = "download"
+                    filename = sanitize_filename(filename)  # Sanitize the filename
                     self._progress_callback(
                         self.download_id,
                         100,
@@ -166,6 +178,9 @@ class Downloader:
                         0,
                         0
                     )
+                # Call completion callback if set
+                if self._completion_callback:
+                    self._completion_callback(self.download_id)
             else:
                 raise NetworkError(f"Download failed: {obj.get_errors()}")
                 

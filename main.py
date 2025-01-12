@@ -1,7 +1,6 @@
 import signal
 import sys
 from gui.app import DownloaderApp
-import logging
 
 def signal_handler(signum, frame):
     """Handle Ctrl+C gracefully"""
@@ -13,9 +12,6 @@ def signal_handler(signum, frame):
 def main():
     # Set up signal handler for Ctrl+C
     signal.signal(signal.SIGINT, signal_handler)
-    
-    # Initialize logging
-    logging.basicConfig(level=logging.INFO)
     
     # Create and run app
     app = DownloaderApp()

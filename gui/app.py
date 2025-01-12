@@ -17,6 +17,7 @@ from utils.errors import (
     handle_download_error
 )
 from utils.logger import DownloaderLogger
+from .progress_bar_yt import YouTubeProgressBar
 from .download_frame import DownloadFrame
 
 class DownloaderApp:
@@ -315,115 +316,111 @@ class DownloaderApp:
         
         return url.strip()
         
-    def _download_url(self, url: str) -> None:
+    def _download_url(self, url: str):
         """Start downloading a URL"""
         try:
+            # Check if YouTube URL
+            is_youtube = "youtube.com" in url or "youtu.be" in url
+            
             # Log after cleaning the URL
             self.logger.info(f"Starting download for URL: {url}")
             
-            def on_progress(download_id: str, progress: float, speed: str, text: str, total_size: float = 0, downloaded_size: float = 0, remove: bool = False):
-                """Progress callback"""
-                try:
-                    # Queue update for GUI thread
-                    self.update_queue.put({
-                        'download_id': download_id,
-                        'progress': progress,
-                        'speed': speed,
-                        'text': text,
-                        'total_size': total_size,
-                        'downloaded_size': downloaded_size,
-                        'remove': remove
-                    })
-                except Exception as e:
-                    self.logger.error(f"Error in progress callback: {e}", exc_info=True)
+            # Remove this URL from the text field
+            text = self.url_text.get("1.0", tk.END)
+            lines = text.splitlines()
+            new_lines = [line for line in lines if self._clean_url(line) != url]
+            self.url_text.delete("1.0", tk.END)
+            if new_lines:
+                self.url_text.insert("1.0", "\n".join(new_lines) + "\n")
             
-            # Start download based on URL type
-            if "youtube.com" in url or "youtu.be" in url:
-                self.logger.info("Starting YouTube download")
+            # Create progress bar early for YouTube downloads
+            if is_youtube:
+                download_id = url  # Use URL as ID for YouTube downloads
+                self.download_frame.add_download(
+                    download_id=download_id,
+                    text="Preparing YouTube download...",
+                    is_youtube=True
+                )
+                
+                # Start YouTube download
                 self.manager.download_youtube(
                     url=url,
                     preferred_quality=self.selected_quality_var.get(),
-                    on_progress=on_progress,
+                    on_progress=self.on_progress,
                     threads=self.threads_var.get()
                 )
             else:
-                self.logger.info("Starting standard download")
+                # Start regular download
                 self.manager.download(
                     url=url,
-                    on_progress=on_progress,
+                    on_progress=self.on_progress,
                     threads=self.threads_var.get()
                 )
-                
-        except (InvalidURLError, UnsupportedURLError) as e:
-            # Handle URL validation errors
-            title, message = handle_download_error(e)
-            messagebox.showerror(title, message)
-            self.logger.warning(f"Invalid URL entered: {str(e)}")
             
-        except NetworkError as e:
-            # Handle network errors
-            title, message = handle_download_error(e)
-            messagebox.showerror(title, message)
-            self.logger.error(f"Network error: {str(e)}")
-            
-        except Exception as e:
-            # Handle unexpected errors
-            title, message = handle_download_error(e)
-            messagebox.showerror(title, message)
-            self.logger.error(f"Unexpected error: {str(e)}", exc_info=True)
-            
-        finally:
-            # Remove URL from active downloads
+        except (InvalidURLError, UnsupportedURLError, NetworkError, YouTubeError) as e:
+            self.logger.error(f"Error downloading {url}: {e}", exc_info=True)
+            handle_download_error(e)
+            # Remove from active URLs on error
             self.active_urls.discard(url)
-
+            
+    def on_progress(self, download_id: str, progress: float, speed: str = "", 
+                   text: str = "", total_size: float = 0, downloaded_size: float = 0,
+                   is_youtube: bool = False, is_audio: bool = False):
+        """Progress callback for downloads"""
+        try:
+            self.update_queue.put({
+                'download_id': download_id,
+                'progress': progress,
+                'speed': speed,
+                'text': text,
+                'total_size': total_size,
+                'downloaded_size': downloaded_size,
+                'is_youtube': is_youtube,
+                'is_audio': is_audio
+            })
+        except Exception as e:
+            self.logger.error(f"Error in progress callback: {e}", exc_info=True)
+            
     def _process_update_queue(self):
         """Process updates from the update queue"""
         try:
             while True:
                 try:
-                    # Get next update
+                    # Get update from queue
                     update = self.update_queue.get_nowait()
                     
+                    # Extract update info
                     download_id = update['download_id']
                     progress = update['progress']
-                    speed = update['speed']
+                    speed = update.get('speed', '')
                     text = update['text']
                     total_size = update.get('total_size', 0)
                     downloaded_size = update.get('downloaded_size', 0)
-                    remove = update.get('remove', False)
+                    is_youtube = update.get('is_youtube', False)
+                    is_audio = update.get('is_audio', False)
                     
-                    # Handle YouTube download pairs
-                    is_youtube = "_video" in download_id or "_audio" in download_id
-                    if is_youtube:
-                        base_id = download_id.replace("_video", "").replace("_audio", "")
-                        video_id = f"{base_id}_video"
-                        audio_id = f"{base_id}_audio"
-                        
-                        # Check if this is a removal request
-                        if remove:
-                            # Only remove both bars if both downloads are complete
-                            video_bar = self.download_frame.progress_bars.get(video_id)
-                            audio_bar = self.download_frame.progress_bars.get(audio_id)
-                            
-                            if video_bar and audio_bar:
-                                video_progress = video_bar.progress_bar.get()
-                                audio_progress = audio_bar.progress_bar.get()
-                                
-                                if video_progress >= 1.0 and audio_progress >= 1.0:
-                                    # Both complete, remove both bars
-                                    self.download_frame.remove_download(video_id)
-                                    self.download_frame.remove_download(audio_id)
-                        else:
-                            # Regular progress update
-                            self._do_gui_update(download_id, progress, speed, text, total_size=total_size, downloaded_size=downloaded_size)
-                    else:
-                        # Regular download
-                        if remove or progress >= 100:
-                            # Remove progress bar when complete
-                            self.download_frame.remove_download(download_id)
-                        else:
-                            # Regular progress update
-                            self._do_gui_update(download_id, progress, speed, text, total_size=total_size, downloaded_size=downloaded_size)
+                    # Add download progress bar if not exists
+                    if download_id not in self.download_frame.progress_bars:
+                        self.download_frame.add_download(
+                            download_id=download_id,
+                            text=text,
+                            is_youtube=is_youtube,
+                            is_audio=is_audio
+                        )
+                    
+                    # Update progress
+                    self.download_frame.update_progress(
+                        download_id=download_id,
+                        progress=progress,
+                        speed=speed,
+                        text=text,
+                        total_size=total_size,
+                        downloaded_size=downloaded_size
+                    )
+                    
+                    # Remove completed or failed downloads
+                    if progress >= 100 or "Error" in text:
+                        self.download_frame.remove_download(download_id)
                     
                 except Empty:
                     break
@@ -431,9 +428,8 @@ class DownloaderApp:
         except Exception as e:
             self.logger.error(f"Error processing update queue: {e}", exc_info=True)
             
-        finally:
-            # Schedule next update
-            self.root.after(100, self._process_update_queue)
+        # Schedule next update
+        self.root.after(100, self._process_update_queue)
 
     def _do_gui_update(self, download_id: str, progress: float, speed: str, text: str, title: str = None, downloaded_size: int = 0, total_size: int = 0):
         """Perform actual GUI update in main thread"""
@@ -571,3 +567,113 @@ class DownloaderApp:
     def run(self):
         """Start the GUI"""
         self.root.mainloop()
+
+class DownloadFrame(ctk.CTkScrollableFrame):
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self.progress_bars = {}  # Store progress bars by download ID
+        self.youtube_bars = {}  # Store YouTube progress bars by base URL
+        
+    def add_download(self, download_id: str, text: str = "", is_youtube: bool = False, is_audio: bool = False) -> None:
+        """Add a new download progress bar
+        
+        Args:
+            download_id: Unique ID for the download
+            text: Initial text to display
+            is_youtube: Whether this is a YouTube download
+            is_audio: If is_youtube, whether this is the audio component
+        """
+        if download_id in self.progress_bars:
+            return
+            
+        if is_youtube:
+            # Extract base URL from download_id (remove _video/_audio suffix)
+            base_url = download_id.split('_')[0]
+            
+            # Create YouTube progress bar if not exists
+            if base_url not in self.youtube_bars:
+                yt_bar = YouTubeProgressBar(self)
+                yt_bar.pack(fill=tk.X, padx=5, pady=2)
+                yt_bar.set_cancel_callback(lambda: self.on_cancel(base_url))
+                self.youtube_bars[base_url] = yt_bar
+                
+            # Map component ID to base URL for lookups
+            self.progress_bars[download_id] = base_url
+            
+        else:
+            # Create regular download progress bar
+            frame = ctk.CTkFrame(self)
+            frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            # Progress label (shows filename/status)
+            label = ctk.CTkLabel(frame, text=text, anchor="w", width=250)
+            label.pack(side=tk.LEFT, padx=5)
+            
+            # Speed label
+            speed_label = ctk.CTkLabel(frame, text="", width=150)
+            speed_label.pack(side=tk.LEFT, padx=5)
+            
+            # Progress bar
+            progress_bar = ctk.CTkProgressBar(frame, width=200)
+            progress_bar.set(0)
+            progress_bar.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+            
+            # Cancel button
+            cancel_button = ctk.CTkButton(frame, text="Cancel", width=60, command=lambda: self.on_cancel(download_id))
+            cancel_button.pack(side=tk.RIGHT, padx=5)
+            
+            # Store references
+            self.progress_bars[download_id] = {
+                'frame': frame,
+                'bar': progress_bar,
+                'label': label,
+                'speed': speed_label,
+                'cancel': cancel_button
+            }
+            
+    def update_progress(self, download_id: str, progress: float, speed: str = "", text: str = "",
+                       total_size: float = 0, downloaded_size: float = 0) -> None:
+        """Update progress for a download"""
+        if download_id not in self.progress_bars:
+            return
+            
+        if '_' in download_id:  # YouTube download
+            # Get base URL and component type
+            base_url = download_id.split('_')[0]
+            component = 'video' if '_video' in download_id else 'audio'
+            
+            # Update YouTube progress bar
+            if base_url in self.youtube_bars:
+                self.youtube_bars[base_url].update_progress(
+                    component=component,
+                    progress=progress,
+                    speed=speed,
+                    text=text,
+                    total_size=total_size,
+                    downloaded_size=downloaded_size
+                )
+        else:
+            # Update regular progress bar
+            progress_data = self.progress_bars[download_id]
+            progress_data['bar'].set(progress / 100)
+            if text:
+                progress_data['label'].configure(text=text)
+            if speed:
+                progress_data['speed'].configure(text=speed)
+                
+    def remove_download(self, download_id: str) -> None:
+        """Remove a download progress bar"""
+        if download_id not in self.progress_bars:
+            return
+            
+        if '_' in download_id:  # YouTube download
+            base_url = download_id.split('_')[0]
+            if base_url in self.youtube_bars:
+                self.youtube_bars[base_url].destroy()
+                del self.youtube_bars[base_url]
+        else:
+            # Remove regular progress bar
+            progress_data = self.progress_bars[download_id]
+            progress_data['frame'].destroy()
+            
+        del self.progress_bars[download_id]

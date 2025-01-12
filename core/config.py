@@ -36,10 +36,9 @@ class Config:
     SUCCESS_COLOR = "#00FF00"
     
     # Paths
-    BASE_DIR = Path(__file__).parent.parent.parent
-    LOG_FILE = BASE_DIR / "downloader.log"
+    BASE_DIR = Path(__file__).parent.parent
     TEMP_DIR = BASE_DIR / "temp"
-    DOWNLOAD_DIR = BASE_DIR / "downloads"  # Default download directory in project folder
+    DOWNLOAD_DIR = BASE_DIR / "downloads"  # Downloads directory in project root
     
     # File patterns
     YOUTUBE_PATTERNS = [

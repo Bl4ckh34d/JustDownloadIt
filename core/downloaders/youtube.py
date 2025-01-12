@@ -6,9 +6,11 @@ import subprocess
 import logging
 import time
 import uuid
+import re
 from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass
+import tempfile
 
 try:
     import yt_dlp
@@ -22,6 +24,7 @@ except ImportError:
 
 from utils.errors import YouTubeError, InvalidURLError, DownloaderError
 from utils.logger import DownloaderLogger
+from utils.file_utils import sanitize_filename
 from ..config import Config
 from .downloader import Downloader
 
@@ -102,6 +105,7 @@ class YouTubeDownloader(Downloader):
         self._stop_flag = False
         self._lock = threading.Lock()
         self.logger = DownloaderLogger.get_logger()
+        self._completion_callback = None
         
         # Parse quality into video and audio components
         quality_parts = preferred_quality.split(" + ")
@@ -120,89 +124,274 @@ class YouTubeDownloader(Downloader):
         self.progress_callback = callback
         self.logger.debug(f"Progress callback set: {callback}")
         
-    def _get_best_format(self, formats: list, target_height: int = None, target_abr: int = None) -> dict:
-        """Get best matching format based on height or audio bitrate"""
-        if not formats:
-            raise YouTubeError("No formats available")
-            
-        # Log available formats for debugging
-        DownloaderLogger.get_logger().debug("Available formats:")
-        for f in formats:
-            DownloaderLogger.get_logger().debug(f"Format {f.get('format_id')}: height={f.get('height')}, abr={f.get('abr')}, "
-                          f"vcodec={f.get('vcodec')}, acodec={f.get('acodec')}")
-                          
-        if target_height:  # Video format
-            # Filter for video-only streams
-            video_formats = [f for f in formats if 
-                f.get('vcodec') != 'none' and 
-                f.get('acodec') == 'none' and  # Video only
-                f.get('height') is not None]
-            
-            if not video_formats:
-                raise YouTubeError("No suitable video formats found")
-                
-            # Sort by height and choose closest match
-            video_formats.sort(key=lambda x: abs(x.get('height', 0) - target_height))
-            chosen = video_formats[0]
-            
-            DownloaderLogger.get_logger().info(f"Selected video format: {chosen.get('format_id')} "
-                         f"(height: {chosen.get('height')}p, vcodec: {chosen.get('vcodec')})")
-            return chosen
-            
-        elif target_abr:  # Audio format
-            # Filter for audio-only streams
-            audio_formats = [f for f in formats if 
-                f.get('acodec') != 'none' and 
-                f.get('vcodec') == 'none' and  # Audio only
-                f.get('abr') is not None]
-            
-            if not audio_formats:
-                raise YouTubeError("No suitable audio formats found")
-                
-            # Sort by bitrate and choose closest match
-            audio_formats.sort(key=lambda x: abs(x.get('abr', 0) - target_abr))
-            chosen = audio_formats[0]
-            
-            DownloaderLogger.get_logger().info(f"Selected audio format: {chosen.get('format_id')} "
-                         f"(bitrate: {chosen.get('abr')}k, acodec: {chosen.get('acodec')})")
-            return chosen
-            
-        raise YouTubeError("Must specify either target_height or target_abr")
-        
-    def _merge_files(self, video_path: str, audio_path: str, output_path: str) -> None:
-        """Merge video and audio files using ffmpeg
+    def set_completion_callback(self, callback: Callable) -> None:
+        """Set completion callback function
         
         Args:
-            video_path: Path to video file
-            audio_path: Path to audio file
-            output_path: Path to output file
+            callback: Function to call when download is complete
         """
+        self._completion_callback = callback
+        self.logger.debug(f"Completion callback set: {callback}")
+        
+    def _extract_formats(self, url: str) -> tuple:
+        """Extract available formats for video
+        
+        Args:
+            url: Video URL
+            
+        Returns:
+            Tuple of (video_format, audio_format)
+        """
+        # Configure yt-dlp options
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,  # Changed to False to get full format info
+            'format': 'best',  # Default format to ensure we can extract info
+            'cookiesfrombrowser': ('firefox',),
+        }
+        
         try:
-            # Use ffmpeg to merge files
-            command = [
-                'ffmpeg',
-                '-i', video_path,
-                '-i', audio_path,
-                '-c:v', 'copy',
-                '-c:a', 'aac',
-                output_path,
-                '-y'
-            ]
-            
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            
-            stdout, stderr = process.communicate()
-            
-            if process.returncode != 0:
-                raise YouTubeError(f"FFmpeg error: {stderr.decode()}")
+            # Extract video info
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                formats = info['formats']
                 
-        except subprocess.CalledProcessError as e:
-            raise YouTubeError(f"Failed to merge video and audio: {str(e)}")
+                # Log available formats for debugging
+                self.logger.debug("Available formats:")
+                for fmt in formats:
+                    self.logger.debug(f"Format {fmt.get('format_id')}: {fmt.get('height')}p - {fmt.get('vcodec')}/{fmt.get('acodec')}")
+                
+                # Get video-only formats
+                video_formats = [f for f in formats 
+                               if f.get('vcodec', 'none') != 'none' 
+                               and f.get('acodec', 'none') == 'none'
+                               and f.get('height') is not None]
+                
+                # Get audio-only formats
+                audio_formats = [f for f in formats
+                               if f.get('acodec', 'none') != 'none'
+                               and f.get('vcodec', 'none') == 'none']
+                
+                if not video_formats:
+                    raise YouTubeError("No video-only formats found")
+                if not audio_formats:
+                    raise YouTubeError("No audio-only formats found")
+                
+                # Sort video formats by height
+                video_formats.sort(key=lambda x: x.get('height', 0), reverse=True)
+                
+                # Find best video format close to preferred height
+                preferred_height = int(self.video_quality.replace('p', ''))
+                best_video = None
+                for fmt in video_formats:
+                    height = fmt.get('height', 0)
+                    if height >= preferred_height * 0.8:  # Accept 80% of preferred height
+                        best_video = fmt
+                        break
+                
+                # If no format found above threshold, take highest available
+                if not best_video:
+                    best_video = video_formats[0]
+                
+                # Sort audio formats by bitrate
+                audio_formats.sort(key=lambda x: float(x.get('abr', 0)), reverse=True)
+                
+                # Prefer m4a audio format if available
+                best_audio = None
+                for fmt in audio_formats:
+                    if fmt.get('ext', '') == 'm4a':
+                        best_audio = fmt
+                        break
+                
+                # If no m4a found, take highest bitrate
+                if not best_audio:
+                    best_audio = audio_formats[0]
+                
+                self.logger.info(f"Selected video format: {best_video['format_id']} ({best_video.get('height', 0)}p)")
+                self.logger.info(f"Selected audio format: {best_audio['format_id']} ({best_audio.get('abr', 0)}k)")
+                
+                return best_video, best_audio
+                
+        except Exception as e:
+            raise YouTubeError(f"Failed to extract video formats: {str(e)}")
+
+    def _download_video(self, video_format: dict, audio_format: dict = None, output_path: str = None, video_path: str = None, audio_path: str = None) -> None:
+        """Download video and optionally audio streams"""
+        try:
+            # Create temporary paths if not provided
+            if not video_path:
+                video_path = f"{output_path}.video.mp4"
+            if audio_format and not audio_path:
+                audio_path = f"{output_path}.audio.m4a"
             
+            # Track completion
+            video_complete = False
+            audio_complete = False
+            download_lock = threading.Lock()
+            
+            # Base options for both video and audio
+            base_opts = {
+                'retries': 10,
+                'fragment_retries': 10,
+                'retry_sleep_functions': {'http': lambda n: 5},
+                'ignoreerrors': False,
+                'quiet': True,
+                'no_warnings': True,
+                'cookiesfrombrowser': ('firefox',),
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+            }
+            
+            # Function to check completion and call callback
+            def check_completion():
+                nonlocal video_complete, audio_complete
+                with download_lock:
+                    if (video_complete and audio_complete) or (video_complete and not audio_format):
+                        if self._completion_callback:
+                            self._completion_callback(self.url)
+            
+            # Function to download a format
+            def download_stream(format_dict, output_file, is_audio=False):
+                opts = base_opts.copy()
+                opts.update({
+                    'format': format_dict['format_id'],
+                    'outtmpl': {'default': output_file},
+                    'progress_hooks': [lambda d: self._format_progress_hook(
+                        d, 
+                        f"{self.url}_{'audio' if is_audio else 'video'}", 
+                        is_audio,
+                        format_dict.get('filesize', 0)
+                    )],
+                    'extract_flat': True  # Avoid re-extracting format info
+                })
+                
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    try:
+                        ydl.download([self.url])
+                        nonlocal video_complete, audio_complete
+                        with download_lock:
+                            if is_audio:
+                                audio_complete = True
+                            else:
+                                video_complete = True
+                        # Check completion after updating status
+                        check_completion()
+                    except Exception as e:
+                        self.logger.error(f"Error downloading {'audio' if is_audio else 'video'}: {str(e)}")
+                        raise
+            
+            # Start video download thread
+            self.logger.info("Starting video download...")
+            video_thread = threading.Thread(
+                target=download_stream, 
+                args=(video_format, video_path, False)
+            )
+            video_thread.start()
+            
+            # Start audio download thread if needed
+            audio_thread = None
+            if audio_format:
+                audio_thread = threading.Thread(
+                    target=download_stream, 
+                    args=(audio_format, audio_path, True)
+                )
+                audio_thread.start()
+            
+            # Wait for downloads to complete
+            video_thread.join()
+            if audio_thread:
+                audio_thread.join()
+            
+            # Merge if both video and audio were downloaded
+            if audio_format:
+                self.logger.info("Merging video and audio...")
+                if os.path.exists(video_path) and os.path.exists(audio_path):
+                    merge_opts = base_opts.copy()
+                    merge_opts.update({
+                        'format': 'merged',
+                        'outtmpl': {'default': output_path},
+                        'merge_output_format': 'mp4'
+                    })
+                    
+                    with yt_dlp.YoutubeDL(merge_opts) as ydl:
+                        ydl.download(['-'])
+                        
+                    # Clean up temporary files
+                    try:
+                        os.remove(video_path)
+                        os.remove(audio_path)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to clean up temporary files: {e}")
+                else:
+                    raise YouTubeError("Video or audio file missing after download")
+            
+            # Only call completion callback when both components are done
+            if self._completion_callback and (video_complete and (not audio_format or audio_complete)):
+                self._completion_callback(self.url)
+                
+            self.logger.info("Download completed successfully")
+                    
+        except Exception as e:
+            self.logger.error(f"Failed to download video: {str(e)}")
+            raise YouTubeError(f"Failed to download video: {str(e)}")
+
+    def _format_size(self, size: float) -> str:
+        """Format size in bytes to human readable string"""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size < 1024:
+                return f"{size:.1f}{unit}"
+            size /= 1024
+        return f"{size:.1f}TB"
+
+    def _format_progress_hook(self, d: dict, id_: str, is_audio: bool = False, format_size: int = 0) -> None:
+        """Format the progress hook data for the progress callback"""
+        try:
+            if d['status'] == 'downloading':
+                total = float(d.get('total_bytes', 0)) or float(d.get('total_bytes_estimate', 0))
+                downloaded = float(d.get('downloaded_bytes', 0))
+                speed = float(d.get('speed', 0))
+                
+                if total and downloaded:
+                    progress = (downloaded / total) * 100
+                    speed_str = f"{self._format_size(speed)}/s" if speed else ""
+                    text = f"Downloading {self._format_size(downloaded)}/{self._format_size(total)}"
+                    
+                    if self.progress_callback:
+                        self.progress_callback(
+                            id_,
+                            progress,
+                            speed_str,
+                            text,
+                            total,
+                            downloaded,
+                            is_youtube=True,
+                            is_audio=is_audio
+                        )
+                        
+            elif d['status'] == 'finished':
+                # Send 100% progress
+                if self.progress_callback:
+                    self.progress_callback(
+                        id_,
+                        100.0,
+                        "",
+                        "Download complete",
+                        format_size,
+                        format_size,
+                        is_youtube=True,
+                        is_audio=is_audio
+                    )
+                
+        except Exception as e:
+            self.logger.error(f"Error in progress hook: {str(e)}")
+
+    def cancel(self):
+        """Cancel the download"""
+        with self._lock:
+            self._stop_flag = True
+
     def start(self) -> None:
         """Start the download"""
         try:
@@ -219,7 +408,7 @@ class YouTubeDownloader(Downloader):
             
         except Exception as e:
             raise YouTubeError(f"Failed to start download: {str(e)}")
-            
+
     def _download(self, url: str, destination: str) -> None:
         """Download YouTube video
         
@@ -228,269 +417,59 @@ class YouTubeDownloader(Downloader):
             destination: Download destination directory
         """
         try:
-            video_id = f"{url}_video"
-            audio_id = f"{url}_audio"
-            
-            # Initialize progress for both streams
-            if self.progress_callback:
-                self.progress_callback(
-                    download_id=video_id,
-                    progress=0.0,
-                    speed="0 KB/s",
-                    text="Getting video info...",
-                    total_size=0,
-                    downloaded_size=0
-                )
-                self.progress_callback(
-                    download_id=audio_id,
-                    progress=0.0,
-                    speed="0 KB/s",
-                    text="Getting video info...",
-                    total_size=0,
-                    downloaded_size=0
-                )
-                
             # Get cookies
             cookies = get_youtube_cookies()
             
             # Extract video info
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'format': 'bestvideo+bestaudio/best',  # Request separate streams
-                'format_sort': ['res:1080', 'ext:mp4:m4a'],
-                'merge_output_format': 'mp4'
-            }
+            video_format, audio_format = self._extract_formats(url)
             
-            # Only add cookies if successfully loaded
-            if cookies:
-                ydl_opts['cookiefile'] = None  # Don't use cookie file
-                ydl_opts['cookiesfrombrowser'] = ('firefox',)  # Try Firefox first
-            
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-            except Exception as e:
-                if cookies:
-                    # If Firefox cookies failed, try Chrome
-                    ydl_opts['cookiesfrombrowser'] = ('chrome',)
-                    try:
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            info = ydl.extract_info(url, download=False)
-                    except Exception as e2:
-                        # If both failed, try without cookies
-                        self.logger.warning(f"Failed with both Firefox and Chrome cookies, trying without cookies: {e2}")
-                        ydl_opts.pop('cookiesfrombrowser', None)
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            info = ydl.extract_info(url, download=False)
-                else:
-                    # No cookies available, try without
-                    ydl_opts.pop('cookiesfrombrowser', None)
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=False)
-
-            # Get video title
-            video_title = info.get('title', 'Unknown Title')
-            
-            # Update progress bars with video title
-            if self.progress_callback:
-                self.progress_callback(
-                    download_id=video_id,
-                    progress=0.0,
-                    speed="0 KB/s",
-                    text=f"{video_title} (Video)",
-                    total_size=0,
-                    downloaded_size=0
-                )
-                self.progress_callback(
-                    download_id=audio_id,
-                    progress=0.0,
-                    speed="0 KB/s",
-                    text=f"{video_title} (Audio)",
-                    total_size=0,
-                    downloaded_size=0
-                )
-            
-            # Parse quality preferences
-            target_height = int(self.video_quality.replace('p', ''))
-            target_abr = int(self.audio_quality.replace('k', ''))
-            
-            # Get available formats
-            formats = info.get('formats', [])
-            
-            # Find best video and audio formats matching preferences
-            video_format = None
-            audio_format = None
-            
-            # Find best video format (closest to target height)
-            video_formats = [f for f in formats if f.get('vcodec') != 'none' and f.get('acodec') == 'none']
-            if video_formats:
-                video_formats.sort(key=lambda f: abs(f.get('height', 0) - target_height))
-                video_format = video_formats[0]
-            
-            # Find best audio format (closest to target bitrate)
-            audio_formats = [f for f in formats if f.get('vcodec') == 'none' and f.get('acodec') != 'none']
-            if audio_formats:
-                audio_formats.sort(key=lambda f: abs(f.get('abr', 0) - target_abr))
-                audio_format = audio_formats[0]
-            
-            if not video_format or not audio_format:
-                raise YouTubeError("Could not find suitable video and audio formats")
+            self.logger.info(f"Selected video format: {video_format.get('format_id')} ({video_format.get('height', 0)}p)")
+            self.logger.info(f"Selected audio format: {audio_format.get('format_id')} ({audio_format.get('abr', 0)}k)")
             
             # Create unique temporary filenames
-            video_path = os.path.join(destination, f"video_temp_{uuid.uuid4()}.mp4")
-            audio_path = os.path.join(destination, f"audio_temp_{uuid.uuid4()}.m4a")
-            output_path = os.path.join(destination, f"{info['title']}_{info['id']}.mp4")
-            
-            # Download video and audio in parallel
-            video_thread = threading.Thread(
-                target=self._download_format,
-                args=(url, video_format, video_path, video_id)
-            )
-            audio_thread = threading.Thread(
-                target=self._download_format,
-                args=(url, audio_format, audio_path, audio_id)
-            )
-            
-            video_thread.start()
-            audio_thread.start()
-            
-            # Wait for both downloads to complete
-            video_thread.join()
-            audio_thread.join()
-            
-            if self._stop_flag:
-                # Clean up temp files if cancelled
-                for path in [video_path, audio_path]:
-                    if os.path.exists(path):
-                        os.remove(path)
-                return
-            
-            # Remove progress bars for video and audio
-            if self.progress_callback:
-                self.progress_callback(
-                    download_id=video_id,
-                    progress=100.0,
-                    speed="",
-                    text="Video download complete",
-                    total_size=0,
-                    downloaded_size=0,
-                    remove=True  # Signal to remove this progress bar
-                )
-                self.progress_callback(
-                    download_id=audio_id,
-                    progress=100.0,
-                    speed="",
-                    text="Audio download complete",
-                    total_size=0,
-                    downloaded_size=0,
-                    remove=True  # Signal to remove this progress bar
-                )
+            with tempfile.TemporaryDirectory() as temp_dir:
+                video_path = os.path.join(temp_dir, "video")
+                audio_path = os.path.join(temp_dir, "audio") if audio_format else None
                 
-                # Create progress bar for merging
-                merge_id = f"{url}_merge"
-                self.progress_callback(
-                    download_id=merge_id,
-                    progress=0.0,
-                    speed="",
-                    text="Merging video and audio...",
-                    total_size=0,
-                    downloaded_size=0
-                )
-            
-            # Use ffmpeg to merge video and audio
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', video_path,
-                '-i', audio_path,
-                '-c', 'copy',
-                output_path
-            ]
-            
-            subprocess.run(cmd, check=True, capture_output=True)
-            
-            # Clean up temp files
-            os.remove(video_path)
-            os.remove(audio_path)
-            
-            # Complete and remove merge progress bar
-            if self.progress_callback:
-                self.progress_callback(
-                    download_id=merge_id,
-                    progress=100.0,
-                    speed="",
-                    text="Download complete!",
-                    total_size=0,
-                    downloaded_size=0,
-                    remove=True  # Signal to remove this progress bar
-                )
+                # Get sanitized output filename
+                output_filename = sanitize_filename(video_format.get('title', 'Unknown Title'))
+                if not output_filename:
+                    output_filename = 'video'
+                output_path = os.path.join(destination, f"{output_filename}.mp4")
+                
+                self._download_video(video_format, audio_format, output_path, video_path, audio_path)
+                
+                # Call completion callback if set
+                if self._completion_callback:
+                    self._completion_callback(self.url)
                 
         except Exception as e:
             self.logger.error(f"YouTube download failed: {e}", exc_info=True)
-            # Clean up any temp files
-            for path in [video_path, audio_path]:
-                if os.path.exists(path):
-                    os.remove(path)
-            # Remove progress bars on error
+            # Log error and notify progress callback
+            self.logger.error(f"YouTube download failed: {str(e)}")
+            
             if self.progress_callback:
-                for stream_id in [video_id, audio_id]:
-                    self.progress_callback(
-                        download_id=stream_id,
-                        progress=0.0,
-                        speed="",
-                        text=f"Download failed: {str(e)}",
-                        total_size=0,
-                        downloaded_size=0,
-                        remove=True  # Signal to remove these progress bars
-                    )
-            raise YouTubeError(f"Download failed: {str(e)}")
-
-    def _download_format(self, url: str, format_info: dict, output_path: str, download_id: str):
-        """Download a specific format"""
-        try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'format': format_info['format_id'],
-                'outtmpl': output_path,
-                'progress_hooks': [
-                    lambda d: self._format_progress_hook(d, download_id)
-                ]
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-                
-        except Exception as e:
-            self.logger.error(f"Failed to download {download_id}: {e}")
-            raise
-
-    def _format_progress_hook(self, d: dict, download_id: str):
-        """Progress hook for format download"""
-        if d['status'] == 'downloading' and self.progress_callback:
-            total = d.get('total_bytes', 0) or d.get('total_bytes_estimate', 0)
-            downloaded = d.get('downloaded_bytes', 0)
-            speed = d.get('speed', 0)
-            
-            if total and speed:
-                progress = (downloaded / total) * 100
-                speed_str = f"{speed/1024/1024:.2f} MB/s" if speed and progress < 100 else ""  # Hide speed if complete
-                
-                # Keep the same title, just update progress
-                stream_type = "(Video)" if "_video" in download_id else "(Audio)"
-                current_title = d.get('info_dict', {}).get('title', 'Unknown Title')
-                
-                # Update progress for this specific stream
                 self.progress_callback(
-                    download_id=download_id,
-                    progress=progress,
-                    speed=speed_str,
-                    text=f"{current_title} {stream_type}",  # No need to truncate, progress bar will handle it
-                    total_size=total,
-                    downloaded_size=downloaded
+                    download_id=f"{self.url}_video",
+                    progress=0,
+                    speed="",
+                    text=f"Error: {str(e)}",
+                    total_size=0,
+                    downloaded_size=0,
+                    is_youtube=True,
+                    is_audio=False
                 )
                 
-    def cancel(self):
-        """Cancel the download"""
-        with self._lock:
-            self._stop_flag = True
+                if audio_format:
+                    self.progress_callback(
+                        download_id=f"{self.url}_audio",
+                        progress=0,
+                        speed="",
+                        text=f"Error: {str(e)}",
+                        total_size=0,
+                        downloaded_size=0,
+                        is_youtube=True,
+                        is_audio=True
+                    )
+                    
+            raise YouTubeError(f"Download failed: {str(e)}")

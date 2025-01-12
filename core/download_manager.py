@@ -3,14 +3,12 @@ from typing import Optional, Callable, Dict, List, Union
 from queue import Queue
 import threading
 import re
-import logging
 from urllib.error import URLError as BuiltinURLError
 
 from utils.errors import (
     NetworkError, DownloaderError, URLError, 
     InvalidURLError, UnsupportedURLError, YouTubeError
 )
-from utils.logger import DownloaderLogger
 from .config import Config
 from .downloaders import Downloader, YouTubeDownloader
 
@@ -21,18 +19,11 @@ class DownloadManager:
         Args:
             download_dir: Directory to save downloads to. If None, uses default downloads directory
         """
-        self.logger = logging.getLogger(__name__)
-        
-        # Get project root directory
-        project_root = Path(__file__).parent.parent.parent
-        
-        # Set download directory relative to project root
-        self.download_dir = project_root / 'downloads' if download_dir is None else download_dir
+        # Set download directory
+        self.download_dir = Config.DOWNLOAD_DIR if download_dir is None else download_dir
         
         # Create downloads directory if it doesn't exist
         self.download_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.logger.info(f"Download directory set to: {self.download_dir.absolute()}")
         
         self.active_downloads: Dict[str, Union[Downloader, YouTubeDownloader]] = {}
         self.download_queue = Queue()
@@ -58,12 +49,14 @@ class DownloadManager:
                 raise InvalidURLError("URL cannot be empty")
                 
             # Create downloader
-            self.logger.info(f"Creating downloader for URL: {url}")
             downloader = Downloader(url, self.download_dir, threads=min(threads, Config.MAX_THREADS))
             
             # Set progress callback if provided
             if on_progress:
                 downloader.set_progress_callback(on_progress)
+                
+            # Set completion callback
+            downloader.set_completion_callback(self._on_download_complete)
                 
             # Store download object
             self.active_downloads[url] = downloader
@@ -72,21 +65,17 @@ class DownloadManager:
             downloader.start()
             
         except InvalidURLError as e:
-            self.logger.error(f"Invalid URL: {str(e)}")
             raise
             
         except UnsupportedURLError as e:
-            self.logger.error(f"Unsupported URL: {str(e)}")
             raise
             
         except BuiltinURLError as e:
             error_msg = "Invalid URL format"
-            self.logger.error(f"{error_msg}: {str(e)}")
             raise InvalidURLError(error_msg)
             
         except Exception as e:
             error_msg = f"Failed to start download: {str(e)}"
-            self.logger.error(error_msg)
             raise NetworkError(error_msg)
     
     def download_youtube(self, url: str, preferred_quality: str, 
@@ -111,7 +100,6 @@ class DownloadManager:
                 raise InvalidURLError("URL cannot be empty")
                 
             # Create YouTube downloader
-            self.logger.info(f"Creating YouTube downloader for URL: {url}")
             downloader = YouTubeDownloader(
                 url, 
                 self.download_dir,
@@ -123,6 +111,9 @@ class DownloadManager:
             if on_progress:
                 downloader.set_progress_callback(on_progress)
                 
+            # Set completion callback
+            downloader.set_completion_callback(self._on_download_complete)
+                
             # Store download object
             self.active_downloads[url] = downloader
             
@@ -130,16 +121,13 @@ class DownloadManager:
             downloader.start()
             
         except InvalidURLError as e:
-            self.logger.error(f"Invalid YouTube URL: {str(e)}")
             raise
             
         except YouTubeError as e:
-            self.logger.error(f"YouTube download error: {str(e)}")
             raise
             
         except Exception as e:
             error_msg = f"Failed to start YouTube download: {str(e)}"
-            self.logger.error(error_msg)
             raise YouTubeError(error_msg)
 
     def cancel_download(self, download_id: str) -> None:
@@ -147,27 +135,22 @@ class DownloadManager:
         try:
             downloader = self.active_downloads.get(download_id)
             if not downloader:
-                self.logger.warning(f"Attempted to cancel non-existent download: {download_id}")
                 return
                 
-            self.logger.info(f"Cancelling download {download_id}")
-            
             # Cancel the download
             downloader.cancel()
             
             # Remove from active downloads immediately
             self.active_downloads.pop(download_id, None)
-            self.logger.info(f"Removed download entry for {download_id}")
             
             # Notify UI that download is cancelled
             if hasattr(downloader, 'progress_callback') and downloader.progress_callback:
                 try:
                     downloader.progress_callback(download_id, 0, "", "Download cancelled")
                 except Exception as e:
-                    self.logger.error(f"Failed to update UI for cancelled download: {e}")
+                    pass
                 
         except Exception as e:
-            self.logger.error(f"Error cancelling download {download_id}: {e}", exc_info=True)
             raise DownloaderError(f"Failed to cancel download: {e}")
 
     def cancel_all(self) -> None:
@@ -224,3 +207,35 @@ class DownloadManager:
             status['color'] = '#95a5a6'  # Gray for cancelled
             
         return status
+
+    def _on_download_complete(self, download_id: str) -> None:
+        """Handle download completion
+        
+        Args:
+            download_id: ID of the completed download
+        """
+        # For YouTube downloads, only complete if both video and audio are done
+        if "_video" in download_id or "_audio" in download_id:
+            base_id = download_id.rsplit('_', 1)[0]
+            if base_id in self.active_downloads:
+                # Don't remove until both components are done
+                return
+                
+        # Remove from active downloads
+        self.active_downloads.pop(download_id, None)
+
+    def _progress_callback(self, download_id: str, progress: float, speed: str = "", 
+                         text: str = "", total_size: int = 0, downloaded_size: int = 0,
+                         is_youtube: bool = False, is_audio: bool = False) -> None:
+        """Progress callback for downloads"""
+        if self.progress_callback:
+            self.progress_callback(
+                download_id, 
+                progress, 
+                speed, 
+                text, 
+                total_size, 
+                downloaded_size,
+                is_youtube=is_youtube,
+                is_audio=is_audio
+            )
