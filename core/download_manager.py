@@ -6,11 +6,11 @@ import re
 import logging
 from urllib.error import URLError as BuiltinURLError
 
-from ..utils.errors import (
+from utils.errors import (
     NetworkError, DownloaderError, URLError, 
     InvalidURLError, UnsupportedURLError, YouTubeError
 )
-from ..utils.logger import DownloaderLogger
+from utils.logger import DownloaderLogger
 from .config import Config
 from .downloaders import Downloader, YouTubeDownloader
 

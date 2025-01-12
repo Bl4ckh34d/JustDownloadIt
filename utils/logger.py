@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 from typing import Optional
-from ..core.config import Config
+from core.config import Config
 
 class DownloaderLogger:
     _instance: Optional['DownloaderLogger'] = None

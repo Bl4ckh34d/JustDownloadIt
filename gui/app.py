@@ -9,14 +9,14 @@ import re
 from typing import Dict, Optional
 import uuid
 
-from ..core.config import Config
-from ..core.download_manager import DownloadManager
-from ..utils.errors import (
+from core.config import Config
+from core.download_manager import DownloadManager
+from utils.errors import (
     DownloaderError, NetworkError, URLError, 
     InvalidURLError, UnsupportedURLError, 
     handle_download_error
 )
-from ..utils.logger import DownloaderLogger
+from utils.logger import DownloaderLogger
 from .download_frame import DownloadFrame
 
 class DownloaderApp:

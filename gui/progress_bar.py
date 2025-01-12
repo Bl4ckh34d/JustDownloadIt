@@ -3,8 +3,8 @@ import customtkinter as ctk
 from typing import Optional, Callable
 import logging
 
-from ..utils.errors import DownloaderError
-from ..utils.logger import DownloaderLogger
+from utils.errors import DownloaderError
+from utils.logger import DownloaderLogger
 
 class DownloadProgressBar(ctk.CTkFrame):
     def __init__(self, master, download_id: str, display_name: str, color: str = "#007bff", on_cancel: Callable = None):

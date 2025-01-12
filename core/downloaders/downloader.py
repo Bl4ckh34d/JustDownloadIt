@@ -8,11 +8,12 @@ from pySmartDL import SmartDL
 import re
 from urllib.parse import urlparse
 
-from ..config import Config
-from ...utils.errors import (
+from utils.errors import (
     NetworkError, DownloaderError, CancellationError, 
     FileSystemError, InvalidURLError, UnsupportedURLError
 )
+from utils.logger import DownloaderLogger
+from ..config import Config
 
 class DownloaderLogger:
     @staticmethod

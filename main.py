@@ -1,6 +1,6 @@
 import signal
 import sys
-from justdownloadit.gui.app import DownloaderApp
+from gui.app import DownloaderApp
 import logging
 
 def signal_handler(signum, frame):
@@ -10,7 +10,7 @@ def signal_handler(signum, frame):
         app.shutdown()
     sys.exit(0)
 
-if __name__ == "__main__":
+def main():
     # Set up signal handler for Ctrl+C
     signal.signal(signal.SIGINT, signal_handler)
     
@@ -25,3 +25,6 @@ if __name__ == "__main__":
         print("\nReceived Ctrl+C. Shutting down gracefully...")
         app.shutdown()
         sys.exit(0)
+
+if __name__ == '__main__':
+    main()

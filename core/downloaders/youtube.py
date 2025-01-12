@@ -20,10 +20,10 @@ try:
 except ImportError:
     browsercookie = None
 
-from .downloader import Downloader
+from utils.errors import YouTubeError, InvalidURLError, DownloaderError
+from utils.logger import DownloaderLogger
 from ..config import Config
-from ...utils.errors import YouTubeError, InvalidURLError, DownloaderError
-from ...utils.logger import DownloaderLogger
+from .downloader import Downloader
 
 def get_youtube_cookies():
     """Get YouTube cookies from browser"""
