@@ -1,72 +1,70 @@
 import tkinter as tk
 import customtkinter as ctk
 from typing import Optional, Callable
-
+import os
+from tkinter import messagebox
 from utils.errors import DownloaderError
 
 class ProgressBar(ctk.CTkFrame):
     """A progress bar widget that shows download progress, speed, and file size"""
     
-    def __init__(self, master, download_id: str, text: str, cancel_callback: Callable = None, **kwargs):
-        super().__init__(master, **kwargs)
+    def __init__(self, master, download_id: str, text: str = "", cancel_callback: Callable = None):
+        """Initialize progress bar frame"""
+        super().__init__(master)
         
         self.download_id = download_id
-        self.display_name = self._truncate_title(text)
-        self.title = self.display_name
         self.cancel_callback = cancel_callback
         self.progress = 0
-        self.speed = ""
-        self.total_size = 0
-        self.downloaded_size = 0
-        self._allow_destroy = False
-        self._destroying = False
+        self.filepath = None  # Store filepath for opening later
         
-        # Top frame for title and cancel button
-        self.top_frame = ctk.CTkFrame(self)
-        self.top_frame.pack(fill=tk.X, padx=5, pady=(5,0))
+        # Create main content frame
+        self.content = ctk.CTkFrame(self)
+        self.content.pack(fill=tk.X, expand=True, padx=5, pady=2)
         
-        # Title label
-        self.title_label = ctk.CTkLabel(self.top_frame, text=self.display_name, anchor="w")
-        self.title_label.pack(side=tk.LEFT, padx=5, pady=2, fill=tk.X, expand=True)
+        # Create top row with title and close button
+        self.top_row = ctk.CTkFrame(self.content)
+        self.top_row.pack(fill=tk.X, padx=5, pady=(2,0))
         
-        # Cancel button
-        self.cancel_button = ctk.CTkButton(
-            self.top_frame,
-            text="Cancel",
-            width=60,
-            command=self._on_cancel
-        )
-        self.cancel_button.pack(side=tk.RIGHT, padx=5, pady=2)
+        # Title label (left-aligned)
+        self.title_label = ctk.CTkLabel(self.top_row, text=self._truncate_title(text))
+        self.title_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
-        # Bottom frame for progress, speed, and size info
-        self.bottom_frame = ctk.CTkFrame(self)
-        self.bottom_frame.pack(fill=tk.X, padx=5, pady=(0,5))
+        # Close button (right-aligned, small red X)
+        self.close_button = ctk.CTkButton(self.top_row, text="×", width=20, height=20, 
+                                        fg_color="red", hover_color="darkred",
+                                        command=self._on_close)
+        self.close_button.pack(side=tk.RIGHT, padx=(5,0))
+        
+        # Create bottom frame for progress info
+        self.bottom_frame = ctk.CTkFrame(self.content)
+        self.bottom_frame.pack(fill=tk.X, padx=5, pady=(0,2))
         
         # Progress bar
-        self.progress_bar = ctk.CTkProgressBar(
-            self.bottom_frame,
-            height=15,
-            progress_color="#007bff",
-            mode="determinate"
-        )
-        self.progress_bar.pack(fill=tk.X, padx=5, pady=(5,2), expand=True)
+        self.progress_bar = ctk.CTkProgressBar(self.bottom_frame)
+        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0,5))
         self.progress_bar.set(0)
         
-        # Info frame for speed and size
-        self.info_frame = ctk.CTkFrame(self.bottom_frame)
-        self.info_frame.pack(fill=tk.X, padx=5, pady=(0,5))
-        
-        # Progress percentage
-        self.percent_label = ctk.CTkLabel(self.info_frame, text="0%", width=50)
-        self.percent_label.pack(side=tk.LEFT, padx=5)
+        # Right side frame for labels and button
+        self.right_frame = ctk.CTkFrame(self.bottom_frame)
+        self.right_frame.pack(side=tk.RIGHT)
         
         # Speed label
-        self.speed_label = ctk.CTkLabel(self.info_frame, text="", width=100)
+        self.speed_label = ctk.CTkLabel(self.right_frame, text="0 MB/s")
         self.speed_label.pack(side=tk.LEFT, padx=5)
         
-        # Size info (e.g., "50 MB / 100 MB")
-        self.size_label = ctk.CTkLabel(self.info_frame, text="", width=150)
-        self.size_label.pack(side=tk.RIGHT, padx=5)
+        # Size label
+        self.size_label = ctk.CTkLabel(self.right_frame, text="0 MB")
+        self.size_label.pack(side=tk.LEFT, padx=5)
+        
+        # Percent label
+        self.percent_label = ctk.CTkLabel(self.right_frame, text="0%")
+        self.percent_label.pack(side=tk.LEFT, padx=5)
+        
+        # Cancel/Open button (smaller)
+        self.cancel_button = ctk.CTkButton(self.right_frame, text="Cancel", 
+                                         command=self._on_cancel,
+                                         width=60, height=25)  # Reduced size
+        self.cancel_button.pack(side=tk.LEFT, padx=5)
         
     def _truncate_title(self, title: str, max_length: int = 120) -> str:
         """Truncate title to specified length"""
@@ -78,10 +76,25 @@ class ProgressBar(ctk.CTkFrame):
         """Handle cancel button click"""
         try:
             if self.cancel_callback:
+                # Disable the button immediately to prevent multiple clicks
                 self.cancel_button.configure(state="disabled")
-                self.cancel_callback()
+                # Call the cancel callback
+                self.cancel_callback(self.download_id)
+                # Destroy the progress bar after a short delay
+                self.after(500, self.destroy)
         except Exception as e:
             print(f"Error in cancel callback: {e}")
+            
+    def _on_close(self):
+        """Handle close button click"""
+        try:
+            if self.cancel_callback and self.progress < 100:
+                # If download is in progress, cancel it
+                self.cancel_callback(self.download_id)
+            # Remove the progress bar after a short delay
+            self.after(500, self.destroy)
+        except Exception as e:
+            print(f"Error in close: {e}")
             
     def _format_size(self, size_bytes: float) -> str:
         """Format size in bytes to human readable format"""
@@ -98,6 +111,11 @@ class ProgressBar(ctk.CTkFrame):
             # If text indicates completion, ensure progress is 100%
             if text and "(Complete)" in text:
                 progress = 100.0
+                # Change cancel button to open
+                self.cancel_button.configure(text="Open", command=self._on_open)
+                # Store filepath from the text
+                if text and "Saved to:" in text:
+                    self.filepath = text.split("Saved to:", 1)[1].strip()
             else:
                 # Otherwise clamp progress between 0-100
                 progress = min(100, max(0, progress))
@@ -125,23 +143,14 @@ class ProgressBar(ctk.CTkFrame):
         except Exception as e:
             print(f"Error updating progress bar: {e}")
             
-    def destroy(self):
-        """Override destroy to handle cleanup"""
-        try:
-            if self._allow_destroy:
-                super().destroy()
-            self._destroying = True
-        except Exception as e:
-            print(f"Error destroying progress bar: {e}")
-            
-    def allow_destroy(self):
-        """Allow the widget to be destroyed"""
-        self._allow_destroy = True
-        if self._destroying:
+    def _on_open(self):
+        """Open the downloaded file"""
+        if self.filepath:
             try:
-                super().destroy()
+                os.startfile(self.filepath)
             except Exception as e:
-                print(f"Error in allow_destroy: {e}")
+                print(f"Error opening file: {e}")
+                messagebox.showerror("Error", f"Could not open file: {e}")
                 
 class DownloadFrame(ctk.CTkFrame):
     """Frame to manage download progress bars"""

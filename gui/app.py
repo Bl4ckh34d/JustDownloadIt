@@ -25,8 +25,8 @@ class DownloaderApp:
         """Initialize the application"""
         self.root = ctk.CTk()
         self.root.title("JustDownloadIt")
-        self.root.geometry("800x400")  # Start with compact size, 800px width
-        self.root.minsize(800, 400)  # Minimum size when no settings shown
+        self.root.geometry("800x600")  # Increased height from 400 to 600
+        self.root.minsize(800, 600)  # Increased min height from 400 to 600
         
         # Initialize variables
         self.stop_all_downloads = False
@@ -173,14 +173,14 @@ class DownloaderApp:
         if not lines:
             self.download_button.configure(state="disabled")
             # Set compact size when no settings shown
-            self.root.geometry("800x400")
+            self.root.geometry("800x600")
             return 'regular'
             
         self.download_button.configure(state="normal")
         
         # Show options frame and adjust window size if we have URLs
         self.options_frame.pack(fill=tk.BOTH, padx=5, pady=5)
-        self.root.geometry("800x525")  # Expand for settings, maintain 800px width
+        self.root.geometry("800x725")  # Expand for settings, maintain 800px width
         
         # Show frames based on URL types
         self.regular_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -197,42 +197,64 @@ class DownloaderApp:
     def _start_download(self):
         """Start downloading the URL"""
         try:
-            # Get URLs from input
-            urls = self._parse_urls()
-            if not urls:
+            # Get current text and lines
+            current_text = self.url_text.get("1.0", tk.END)
+            all_lines = [line.strip() for line in current_text.splitlines() if line.strip()]
+            if not all_lines:
                 messagebox.showwarning("Warning", "Please enter at least one URL")
                 return
+                
+            remaining_lines = []
+            failed_urls = set()  # Use set to avoid duplicates
             
-            # Start downloads in parallel
-            for url in urls:
-                # Clean and validate URL
-                url = self._clean_url(url)
+            # Process each line exactly once
+            for line in all_lines:
+                url = self._clean_url(line)
                 
+                # Skip empty URLs
                 if not url:
-                    self.logger.warning("Empty URL after cleaning, skipping")
+                    remaining_lines.append(line)
                     continue
                     
+                # Skip invalid protocols
                 if not url.startswith(('http://', 'https://')):
-                    self.logger.warning(f"Unsupported URL protocol: {url}, skipping")
+                    remaining_lines.append(line)
+                    failed_urls.add(url)
                     continue
                     
-                # Check if URL is already being downloaded
+                # Skip already downloading URLs
                 if url in self.active_urls:
-                    self.logger.info(f"URL already downloading: {url}, skipping")
+                    remaining_lines.append(line)
                     continue
                     
-                # Add to active URLs
-                self.active_urls.add(url)
+                # Try to start the download
+                try:
+                    # Start download in a new thread
+                    thread = threading.Thread(target=self._download_url, args=(url,))
+                    thread.daemon = True
+                    thread.start()
+                    
+                    # Only add to active URLs if thread started successfully
+                    self.active_urls.add(url)
+                except Exception as e:
+                    self.logger.error(f"Failed to start download for {url}: {e}")
+                    failed_urls.add(url)
+                    remaining_lines.append(line)
+            
+            # Update text widget with remaining lines
+            self.url_text.delete("1.0", tk.END)
+            if remaining_lines:
+                self.url_text.insert("1.0", "\n".join(remaining_lines) + "\n")
                 
-                # Start download in a new thread
-                thread = threading.Thread(target=self._download_url, args=(url,))
-                thread.daemon = True
-                thread.start()
+            # Show message if any URLs failed
+            if failed_urls:
+                failed_msg = "Failed to start downloads for the following URLs:\n" + "\n".join(failed_urls)
+                messagebox.showwarning("Warning", failed_msg)
                 
         except Exception as e:
             self.logger.error(f"Error in start_download: {e}", exc_info=True)
             messagebox.showerror("Error", f"Failed to start downloads: {str(e)}")
-            
+        
     def _clean_url(self, url: str) -> str:
         """Clean URL by removing log messages and invalid characters
         
@@ -269,14 +291,6 @@ class DownloaderApp:
         try:
             # Log after cleaning the URL
             self.logger.info(f"Starting download for URL: {url}")
-            
-            # Remove this URL from the text field
-            text = self.url_text.get("1.0", tk.END)
-            lines = text.splitlines()
-            new_lines = [line for line in lines if self._clean_url(line) != url]
-            self.url_text.delete("1.0", tk.END)
-            if new_lines:
-                self.url_text.insert("1.0", "\n".join(new_lines) + "\n")
             
             # Start regular download
             self.manager.download(
