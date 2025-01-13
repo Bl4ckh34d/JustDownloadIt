@@ -25,7 +25,7 @@ except ImportError:
 from utils.errors import YouTubeError, InvalidURLError, DownloaderError
 from utils.logger import DownloaderLogger
 from utils.file_utils import sanitize_filename
-from ..config import Config
+from .config import Config
 from .downloader import Downloader
 
 def get_youtube_cookies():

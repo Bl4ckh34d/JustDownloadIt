@@ -10,7 +10,8 @@ from utils.errors import (
     InvalidURLError, UnsupportedURLError, YouTubeError
 )
 from .config import Config
-from .downloaders import Downloader, YouTubeDownloader
+from .downloader import Downloader
+from .youtube import YouTubeDownloader
 
 class DownloadManager:
     def __init__(self, download_dir: Optional[Path] = None):

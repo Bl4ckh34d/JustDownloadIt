@@ -14,7 +14,7 @@ from utils.errors import (
 )
 from utils.logger import DownloaderLogger
 from utils.file_utils import sanitize_filename
-from ..config import Config
+from .config import Config
 
 class DownloaderLogger:
     @staticmethod
