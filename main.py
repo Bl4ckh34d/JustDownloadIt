@@ -1,3 +1,23 @@
+"""
+Entry point for JustDownloadIt application.
+
+This module initializes and runs the main application window.
+It handles signal interrupts (Ctrl+C) for graceful shutdown.
+
+Features:
+    - Application initialization
+    - Signal handling
+    - Graceful shutdown
+
+Functions:
+    signal_handler: Handles Ctrl+C interrupts
+    main: Creates and runs the application
+
+Dependencies:
+    - gui.app: Main application window
+    - signal: Signal handling
+"""
+
 import signal
 import sys
 from gui.app import DownloaderApp

@@ -1,191 +1,84 @@
 """
-Download progress display frame for JustDownloadIt.
-
-This module provides the DownloadFrame class which manages multiple download progress bars.
-It handles both regular downloads and YouTube downloads with their specific progress displays.
-
-Features:
-    - Progress bar management for multiple simultaneous downloads
-    - Support for YouTube downloads with separate video/audio progress
-    - Cancel/Clear functionality for each download
-    - Dynamic progress updates with speed and ETA
-
-Classes:
-    DownloadFrame: Scrollable frame that manages multiple progress bars
-
-Dependencies:
-    - customtkinter: Modern themed tkinter widgets
-    - core.download_state: Download state tracking
-    - gui.progress_bar: Individual progress bar widget
-    - gui.progress_bar_yt: YouTube-specific progress bar widget
+Download frame for displaying active downloads.
 """
 
-from core.download_state import DownloadState
 import customtkinter as ctk
-import os
-from typing import Callable, Optional
-from .progress_bar import ProgressBar
-from .progress_bar_yt import YouTubeProgressBar
+import tkinter as tk
+from typing import Dict, Optional, Callable
+from core.download_state import DownloadState
+from .widgets.progress_bar import ProgressBar
+from .widgets.progress_bar_yt import YouTubeProgressBar
+from utils.url_utils import check_link_type
 
 class DownloadFrame(ctk.CTkScrollableFrame):
-    """Frame to hold download progress bars"""
+    """Frame for displaying active downloads."""
     
     def __init__(self, master, **kwargs):
-        super().__init__(
-            master,
-            height=200,
-            fg_color="transparent",
-            corner_radius=0,
-            **kwargs
-        )
-        
-        # Dictionary to store regular progress bars
-        self.progress_bars = {}
-        # Dictionary to store YouTube progress bars by base URL
-        self.youtube_bars = {}
-        
-    def add_download(self, download_id: str, download_type: str = "regular", audio_only: bool = False, 
-                    is_youtube: bool = False, is_audio: bool = False) -> Optional[ProgressBar]:
-        """
-        Add a new download progress bar.
+        """Initialize download frame.
         
         Args:
-            download_id: Unique identifier for the download
-            download_type: Type of download ("regular" or "youtube")
-            audio_only: Whether this is an audio-only download
-            is_youtube: Whether this is a YouTube download
-            is_audio: Whether this is an audio stream
-            
-        Returns:
-            ProgressBar: The created progress bar, or None if already exists
+            master: Parent widget
         """
-        if download_id in self.progress_bars or download_id in self.youtube_bars:
-            return None
-            
-        # Create cancel callback that calls the app's cancel method
-        def cancel_callback(*args):
-            if hasattr(self, 'on_cancel'):
-                self.on_cancel(download_id)
-                
-        # Handle both parameter styles
-        is_youtube = is_youtube or download_type == "youtube"
-        is_audio = is_audio or audio_only
-            
-        if is_youtube:
-            youtube_bar = YouTubeProgressBar(
-                self, 
+        super().__init__(master, **kwargs)
+        
+        # Initialize state
+        self._downloads = {}
+        
+    def add_download(self, download_id: str, url: str, 
+                    on_cancel: Optional[Callable] = None,
+                    on_close: Optional[Callable] = None,
+                    audio_only: bool = False) -> None:
+        """Add a new download to the frame.
+        
+        Args:
+            download_id (str): Unique ID for the download
+            url (str): URL being downloaded
+            on_cancel (callable, optional): Callback when download is cancelled
+            on_close (callable, optional): Callback when download is closed
+            audio_only (bool, optional): Whether this is an audio-only download
+        """
+        # Create appropriate progress bar based on URL type and audio_only setting
+        if check_link_type(url) == "youtube" and not audio_only:
+            # Use YouTube progress bar for video downloads
+            progress_bar = YouTubeProgressBar(
+                self,
                 download_id=download_id,
-                cancel_callback=cancel_callback,
-                audio_only=is_audio
+                on_cancel=on_cancel,
+                on_close=lambda: self._on_close(download_id)
             )
-            self.youtube_bars[download_id] = youtube_bar
-            youtube_bar.pack(fill="x", padx=5, pady=2)
-            return youtube_bar
         else:
+            # Use regular progress bar for non-YouTube downloads and audio-only downloads
             progress_bar = ProgressBar(
-                self, 
+                self,
                 download_id=download_id,
-                cancel_callback=cancel_callback
+                on_cancel=on_cancel,
+                on_close=lambda: self._on_close(download_id)
             )
-            progress_bar.pack(fill="x", padx=5, pady=5)
-            self.progress_bars[download_id] = progress_bar
-            return progress_bar
             
-    def update_progress(self, download_id: str, progress: float, state: DownloadState, 
-                       speed: str = "", text: str = "", total_size: float = 0, 
-                       downloaded_size: float = 0, stats: dict = None,
-                       component: str = None) -> None:
-        """
-        Update the progress of a download.
+        # Store progress bar
+        self._downloads[download_id] = progress_bar
+        
+        # Pack progress bar
+        progress_bar.pack(fill="x", padx=5, pady=5)
+        
+    def update_download(self, download_id: str, state: DownloadState) -> None:
+        """Update download progress.
         
         Args:
-            download_id (str): ID of the download to update
-            progress (float): Current progress (0-100)
-            state (DownloadState): Current download state
-            speed (str, optional): Current download speed. Defaults to "".
-            text (str, optional): Text to display. Defaults to "".
-            total_size (float, optional): Total file size in bytes. Defaults to 0.
-            downloaded_size (float, optional): Downloaded size in bytes. Defaults to 0.
-            stats (dict, optional): Dictionary of download statistics. Defaults to None.
-            component (str, optional): For YouTube downloads, specifies "video" or "audio". Defaults to None.
+            download_id (str): Download ID to update
+            state (DownloadState): New download state
         """
-        print(f"Update progress called for download_id: {download_id}, progress: {progress}, component: {component}")
-        print(f"Progress bars: {list(self.progress_bars.keys())}")
-        print(f"YouTube bars: {list(self.youtube_bars.keys())}")
-        
-        if download_id in self.progress_bars:
-            print(f"Updating regular progress bar for {download_id}")
-            progress_bar = self.progress_bars[download_id]
-            try:
-                # Set filepath only if it's a valid absolute path
-                if text and os.path.isabs(text):
-                    progress_bar.set_filepath(text)
-                
-                progress_bar._update_progress(
-                    progress=progress,
-                    speed=speed,
-                    text="Download complete" if state == DownloadState.COMPLETED else text,
-                    total_size=total_size,
-                    downloaded_size=downloaded_size,
-                    stats=stats,
-                    state=state
-                )
-            except Exception as e:
-                print(f"Error updating progress: {e}")
-                
-        elif download_id in self.youtube_bars:
-            print(f"Updating YouTube progress bar for {download_id} ({component})")
-            youtube_bar = self.youtube_bars[download_id]
-            try:
-                youtube_bar.update_progress(
-                    text=text,
-                    progress=progress,
-                    component=component,
-                    speed=speed,
-                    downloaded_size=downloaded_size,
-                    total_size=total_size,
-                    stats=stats
-                )
-                
-                # Update state if needed
-                if state == DownloadState.COMPLETED:
-                    youtube_bar.action_button.configure(
-                        text="Open",
-                        command=lambda: youtube_bar._open_file(text if os.path.isabs(text) else None)
-                    )
-                
-            except Exception as e:
-                print(f"Error updating progress: {e}")
-                
-    def remove_download(self, download_id: str) -> None:
-        """
-        Remove a download progress bar from the frame.
+        if download_id in self._downloads:
+            self._downloads[download_id].update_state(state)
+            
+    def _on_close(self, download_id: str) -> None:
+        """Handle download close.
         
         Args:
-            download_id (str): ID of the download to remove
+            download_id (str): ID of download to close
         """
-        try:
-            # For YouTube downloads, check both dictionaries
-            if download_id in self.youtube_bars:
-                progress_bar = self.youtube_bars[download_id]
-                
-                # Remove all component mappings
-                for component_id, base_id in list(self.progress_bars.items()):
-                    if base_id == download_id:
-                        del self.progress_bars[component_id]
-                
-                # Remove the progress bar
-                progress_bar.pack_forget()
-                progress_bar.destroy()
-                del self.youtube_bars[download_id]
-                
-            elif download_id in self.progress_bars:
-                progress_bar = self.progress_bars[download_id]
-                progress_bar.pack_forget()
-                progress_bar.destroy()
-                del self.progress_bars[download_id]
-            else:
-                print(f"No progress bar found for {download_id}")
-                
-        except Exception as e:
-            print(f"Error clearing download frame: {str(e)}")
+        if download_id in self._downloads:
+            # Destroy progress bar
+            self._downloads[download_id].destroy()
+            # Remove from tracking
+            del self._downloads[download_id]

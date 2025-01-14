@@ -5,40 +5,56 @@ This module provides various file-related utility functions used throughout the 
 It handles file name sanitization, path manipulation, and file system operations.
 
 Functions:
-    sanitize_filename: Clean filenames of invalid characters
-    get_unique_filename: Generate unique filename to avoid conflicts
-    ensure_dir: Create directory if it doesn't exist
-    get_file_size: Get human-readable file size
-    is_valid_path: Check if a path is valid for the current OS
+    sanitize_filename: Remove invalid characters from filename
+    get_unique_filename: Get a unique filename by adding a number suffix if the file exists
 
 Dependencies:
     - pathlib: Path manipulation
     - os: File system operations
+    - re: Regular expressions
 """
 
 import os
+from pathlib import Path
 import re
 
 def sanitize_filename(filename: str) -> str:
     """
-    Sanitize a filename by removing invalid characters and replacing them with underscores.
+    Remove invalid characters from filename.
     
     Args:
-        filename (str): The filename to sanitize
+        filename: Original filename
         
     Returns:
-        str: The sanitized filename that is safe to use on the filesystem
+        str: Sanitized filename
     """
-    # Replace invalid characters with underscore
-    # This covers Windows, macOS, and Linux invalid characters
-    invalid_chars = r'[<>:"/\\|?*\x00-\x1f]'
-    sanitized = re.sub(invalid_chars, '_', filename)
+    # Remove invalid characters
+    filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+    # Remove control characters
+    filename = "".join(char for char in filename if ord(char) >= 32)
+    return filename.strip()
+
+def get_unique_filename(filepath: Path) -> Path:
+    """
+    Get a unique filename by adding a number suffix if the file exists.
     
-    # Remove dots and spaces from start/end
-    sanitized = sanitized.strip('. ')
-    
-    # Ensure filename isn't empty after sanitization
-    if not sanitized:
-        sanitized = 'download'
+    Args:
+        filepath: Original file path
         
-    return sanitized
+    Returns:
+        Path: Unique file path
+    """
+    if not filepath.exists():
+        return filepath
+        
+    directory = filepath.parent
+    name = filepath.stem
+    extension = filepath.suffix
+    counter = 1
+    
+    while True:
+        new_name = f"{name} ({counter}){extension}"
+        new_path = directory / new_name
+        if not new_path.exists():
+            return new_path
+        counter += 1

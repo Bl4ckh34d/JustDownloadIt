@@ -48,9 +48,9 @@ except ImportError:
 
 from utils.errors import YouTubeError, InvalidURLError, DownloaderError
 from utils.logger import DownloaderLogger
-from utils.file_utils import sanitize_filename
+from utils.file_utils import sanitize_filename, get_unique_filename
 from .config import Config
-from .downloader import Downloader
+from .regular_downloader import Downloader
 from .download_state import DownloadState
 
 def get_youtube_cookies():
@@ -169,9 +169,9 @@ class YouTubeDownloader(Downloader):
             threads: Number of threads to use
             audio_only: If True, only download audio
         """
-        super().__init__(url, download_dir, threads)
+        super().__init__(url, Path(download_dir), threads)
         self.url = url  # Store as instance variable
-        self.download_dir = download_dir  # Store as instance variable
+        self.download_dir = Path(download_dir)  # Store as Path object
         self.preferred_quality = preferred_quality
         self.audio_only = audio_only
         self.progress_callback = None
@@ -189,6 +189,9 @@ class YouTubeDownloader(Downloader):
             
         self.video_quality = quality_parts[0] if not audio_only else None  # e.g., "1080p"
         self.audio_quality = quality_parts[1]  # e.g., "160k"
+        
+        # Create download directory if it doesn't exist
+        self.download_dir.mkdir(parents=True, exist_ok=True)
 
     def set_progress_callback(self, callback: Callable) -> None:
         """
@@ -257,7 +260,7 @@ class YouTubeDownloader(Downloader):
                         if self.video_quality == 'highest':
                             if not video_format or height > video_format.get('height', 0):
                                 video_format = f
-                                
+                                 
                         # For specific quality, take closest without going over
                         else:
                             if height <= target_height:
@@ -323,70 +326,104 @@ class YouTubeDownloader(Downloader):
             audio_path: Output path for audio stream (optional)
         """
         try:
-            # Create threads for video and audio downloads
-            threads = []
-            if video_format:
-                video_thread = threading.Thread(
-                    target=self.download_stream,
-                    args=(video_format, video_path),
-                    kwargs={'is_audio': False}
-                )
-                threads.append(video_thread)
+            # Create temporary directory for intermediate files
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Create unique temp paths for video and audio
+                temp_dir_path = Path(temp_dir)
                 
-            if audio_format:
-                audio_thread = threading.Thread(
-                    target=self.download_stream,
-                    args=(audio_format, audio_path),
-                    kwargs={'is_audio': True}
-                )
-                threads.append(audio_thread)
+                # Store actual paths after getting unique names
+                actual_video_path = None
+                actual_audio_path = None
                 
-            # Start all download threads
-            for thread in threads:
-                thread.start()
+                # Prepare download threads
+                download_threads = []
+                download_events = []
                 
-            # Wait for all downloads to complete
-            for thread in threads:
-                thread.join()
-
-            # Check if both files exist before merging
-            if video_format and not os.path.exists(video_path):
-                raise YouTubeError(f"Video file not found: {video_path}")
-            if audio_format and not os.path.exists(audio_path):
-                raise YouTubeError(f"Audio file not found: {audio_path}")
-
-            # Merge video and audio if needed
-            if audio_format and video_format:
-                # Ensure output directory exists
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                # Setup video download if needed
+                if video_format:
+                    # Get unique name for video using download_id
+                    video_temp_name = f"{self.video_title}_{self.download_id}_video.mp4"
+                    actual_video_path = str(get_unique_filename(temp_dir_path / video_temp_name)) if not video_path else video_path
+                    video_done = threading.Event()
+                    video_thread = threading.Thread(
+                        target=self.download_stream,
+                        args=(video_format, actual_video_path),
+                        kwargs={'is_audio': False}
+                    )
+                    download_threads.append(video_thread)
+                    download_events.append(video_done)
+                    video_thread.start()
                 
-                # Run FFmpeg command
-                try:
-                    subprocess.run([
-                        'ffmpeg', '-y',
-                        '-i', video_path,
-                        '-i', audio_path,
-                        '-c', 'copy',
-                        output_path
-                    ], check=True, capture_output=True, text=True)
-                except subprocess.CalledProcessError as e:
-                    raise YouTubeError(f"FFmpeg error: {e.stderr or str(e)}")
+                # Setup audio download if needed
+                if audio_format:
+                    # Get unique name for audio using download_id
+                    audio_temp_name = f"{self.video_title}_{self.download_id}_audio.m4a"
+                    actual_audio_path = str(get_unique_filename(temp_dir_path / audio_temp_name)) if not audio_path else audio_path
+                    audio_done = threading.Event()
+                    audio_thread = threading.Thread(
+                        target=self.download_stream,
+                        args=(audio_format, actual_audio_path),
+                        kwargs={'is_audio': True}
+                    )
+                    download_threads.append(audio_thread)
+                    download_events.append(audio_done)
+                    audio_thread.start()
+                
+                # Wait for all downloads to complete
+                for thread in download_threads:
+                    thread.join()
+                
+                # If no output path specified, create one
+                if not output_path:
+                    filename = f"{sanitize_filename(self.video_title)}.{'mp3' if self.audio_only else 'mp4'}"
+                    output_path = str(get_unique_filename(self.download_dir / filename))
+                
+                # If only downloading audio
+                if self.audio_only and actual_audio_path:
+                    # Just move audio file to output path
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                    os.rename(actual_audio_path, output_path)
+                    return
+                
+                # Combine streams if we have both
+                if video_format and audio_format and actual_video_path and actual_audio_path:
+                    # Create unique temp path for combined file using download_id
+                    combined_temp_name = f"{self.video_title}_{self.download_id}_combined.mp4"
+                    temp_combined = str(get_unique_filename(temp_dir_path / combined_temp_name))
                     
-                # Clean up temporary files
-                try:
-                    os.remove(video_path)
-                    os.remove(audio_path)
-                except OSError as e:
-                    self.logger.warning(f"Failed to clean up temporary files: {e}")
-            elif video_format:
-                # Just rename video file to final output
-                os.rename(video_path, output_path)
-            else:
-                # Audio only - rename audio file to final output
-                os.rename(audio_path, output_path)
-                
+                    # Combine video and audio using ffmpeg
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', actual_video_path,  # Use actual video path
+                        '-i', actual_audio_path,  # Use actual audio path
+                        '-c', 'copy',
+                        temp_combined
+                    ]
+                    
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE
+                    )
+                    
+                    stdout, stderr = process.communicate()
+                    
+                    if process.returncode != 0:
+                        raise YouTubeError(f"Failed to combine streams: {stderr.decode()}")
+                        
+                    # Move combined file to final destination
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                    os.rename(temp_combined, output_path)
+                elif actual_video_path:
+                    # Just move video file to output path
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                    os.rename(actual_video_path, output_path)
+                    
         except Exception as e:
-            raise YouTubeError(f"Error in download_video: {e}")
+            raise YouTubeError(f"Failed to download video: {str(e)}")
 
     def download_stream(self, format_info: dict, output_path: str, is_audio: bool = False) -> None:
         """
@@ -411,6 +448,7 @@ class YouTubeDownloader(Downloader):
             def progress_hook(d):
                 try:
                     self.logger.debug(f"Progress hook called with status: {d['status']}")
+
                     # Update current progress with safe float conversion
                     speed = d.get('speed')
                     if speed is not None:
@@ -420,14 +458,14 @@ class YouTubeDownloader(Downloader):
                             speed = 0
                     else:
                         speed = 0
-                        
+                         
                     downloaded = d.get('downloaded_bytes', 0)
                     if downloaded is not None:
                         try:
                             downloaded = float(downloaded)
                         except (ValueError, TypeError):
                             downloaded = 0
-                            
+                             
                     total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
                     if total is not None:
                         try:
@@ -447,30 +485,49 @@ class YouTubeDownloader(Downloader):
                         progress = (downloaded / total) * 100
                     else:
                         progress = 0
-                        
+                         
                     # Format speed string
                     speed_str = f"{self._format_size(speed)}/s" if speed else ""
                     
                     # Call progress callback with component-specific progress
                     if self.progress_callback:
-                        state = DownloadState.DOWNLOADING if d['status'] == 'downloading' else DownloadState.FINISHED
-                        self.progress_callback(
-                            progress=progress,
-                            speed=speed_str,
-                            text=f"Downloading {self.video_title} ({'audio' if is_audio else 'video'})",
-                            total_size=total,
-                            downloaded_size=downloaded,
-                            stats={
-                                'peak_speed': speed,
-                                'avg_speed': speed,
-                                'total_time': 0,
-                                'timestamps': [],
-                                'speeds': []
-                            },
-                            state=state,
-                            component="audio" if self.audio_only or is_audio else "video"
-                        )
+                        state = DownloadState.DOWNLOADING if d['status'] == 'downloading' else DownloadState.COMPLETED
                         
+                        # For audio-only downloads, don't specify component
+                        if self.audio_only:
+                            self.progress_callback(
+                                progress=progress,
+                                speed=speed_str,
+                                text=f"Downloading {self.video_title}",
+                                total_size=total,
+                                downloaded_size=downloaded,
+                                stats={
+                                    'peak_speed': speed,
+                                    'avg_speed': speed,
+                                    'total_time': 0,
+                                    'timestamps': [],
+                                    'speeds': []
+                                },
+                                state=state
+                            )
+                        else:
+                            # For video downloads, specify component
+                            self.progress_callback(
+                                progress=progress,
+                                speed=speed_str,
+                                text=f"Downloading {self.video_title} ({'audio' if is_audio else 'video'})",
+                                total_size=total,
+                                downloaded_size=downloaded,
+                                stats={
+                                    'peak_speed': speed,
+                                    'avg_speed': speed,
+                                    'total_time': 0,
+                                    'timestamps': [],
+                                    'speeds': []
+                                },
+                                state=state,
+                                component="audio" if is_audio else "video"
+                            )
                 except Exception as e:
                     self.logger.error(f"Error in progress hook: {e}")
 
@@ -504,20 +561,34 @@ class YouTubeDownloader(Downloader):
             
             # Send final progress update
             if self.progress_callback:
-                self.progress_callback(
-                    progress=100.0,
-                    speed="",
-                    text=f"{'Audio' if is_audio else 'Video'} download complete",
-                    total_size=self._current_progress['total'],
-                    downloaded_size=self._current_progress['total'],
-                    stats=None,
-                    state=DownloadState.FINISHED,
-                    component="audio" if self.audio_only or is_audio else "video"
-                )
+                # For audio-only downloads, don't specify component
+                if self.audio_only:
+                    self.progress_callback(
+                        progress=100.0,
+                        speed="",
+                        text=f"Download complete",
+                        total_size=self._current_progress['total'],
+                        downloaded_size=self._current_progress['total'],
+                        stats=None,
+                        state=DownloadState.COMPLETED
+                    )
+                else:
+                    # For video downloads, specify component
+                    self.progress_callback(
+                        progress=100.0,
+                        speed="",
+                        text=f"{'Audio' if is_audio else 'Video'} download complete",
+                        total_size=self._current_progress['total'],
+                        downloaded_size=self._current_progress['total'],
+                        stats=None,
+                        state=DownloadState.COMPLETED,
+                        component="audio" if is_audio else "video"
+                    )
                 
         except Exception as e:
             self.logger.error(f"Error in download_stream: {e}")
-            raise YouTubeError(f"Error downloading stream: {e}")
+            video_id = extract_video_id(self.url) or "unknown"
+            raise YouTubeError(f"Error downloading stream: {e}", video_id)
 
     def _format_progress_hook(self, d: dict, id_: str, is_audio: bool = False, format_size: int = 0) -> None:
         """
@@ -573,7 +644,7 @@ class YouTubeDownloader(Downloader):
                     total_size=format_size,
                     downloaded_size=format_size,
                     stats=None,
-                    state=DownloadState.FINISHED,
+                    state=DownloadState.COMPLETED,
                     component="audio" if self.audio_only or is_audio else "video"
                 )
                 

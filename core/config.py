@@ -1,3 +1,24 @@
+"""
+Configuration management for JustDownloadIt.
+
+This module provides the Config class which manages application-wide settings.
+It handles both default and user-specific configurations.
+
+Features:
+    - Window dimensions and layout settings
+    - Download settings (threads, retries, chunk size)
+    - YouTube quality presets
+    - User configuration file management
+    - Theme and appearance settings
+
+Classes:
+    Config: Static configuration class with application settings
+
+Dependencies:
+    - pathlib: Path manipulation
+    - json: Configuration file parsing
+"""
+
 from pathlib import Path
 from typing import Dict, Any, List
 import json
@@ -14,6 +35,10 @@ class Config:
     DEFAULT_RETRY_ATTEMPTS = 5  # Changed from 3 to 5
     DOWNLOAD_CHUNK_SIZE = 8192
     WAIT_BETWEEN_RETRIES = 5  # seconds
+    
+    # Path settings
+    ROOT_DIR = Path(__file__).parent.parent  # Project root directory
+    DOWNLOAD_DIR = ROOT_DIR / 'downloads'  # Default downloads directory
     
     # YouTube specific settings
     YOUTUBE_VIDEO_QUALITIES = ['2160p', '1440p', '1080p', '720p', '480p', '360p', '240p', '144p']
@@ -34,11 +59,6 @@ class Config:
     REGULAR_COLOR = "#00FF00"
     ERROR_COLOR = "#FF0000"
     SUCCESS_COLOR = "#00FF00"
-    
-    # Paths
-    BASE_DIR = Path(__file__).parent.parent
-    TEMP_DIR = BASE_DIR / "temp"
-    DOWNLOAD_DIR = BASE_DIR / "downloads"  # Downloads directory in project root
     
     # File patterns
     YOUTUBE_PATTERNS = [
@@ -110,7 +130,7 @@ class Config:
     @classmethod
     def load_user_config(cls) -> None:
         """Load user configuration from config.json if it exists"""
-        config_file = cls.BASE_DIR / "config.json"
+        config_file = cls.ROOT_DIR / "config.json"
         if config_file.exists():
             try:
                 with open(config_file, 'r') as f:
@@ -124,7 +144,7 @@ class Config:
     @classmethod
     def save_user_config(cls) -> None:
         """Save current configuration to config.json"""
-        config_file = cls.BASE_DIR / "config.json"
+        config_file = cls.ROOT_DIR / "config.json"
         try:
             config_dict = {
                 key: value for key, value in cls.__dict__.items()

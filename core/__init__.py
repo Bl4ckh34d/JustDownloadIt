@@ -1,6 +1,6 @@
 """Core functionality for JustDownloadIt"""
 
-from .downloader import Downloader
-from .youtube import YouTubeDownloader
+from .regular_downloader import Downloader
+from .youtube_downloader import YouTubeDownloader
 
 __all__ = ['Downloader', 'YouTubeDownloader']

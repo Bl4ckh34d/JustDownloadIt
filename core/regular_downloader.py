@@ -36,7 +36,7 @@ from utils.errors import (
     FileSystemError, InvalidURLError, UnsupportedURLError
 )
 from utils.logger import DownloaderLogger
-from utils.file_utils import sanitize_filename
+from utils.file_utils import sanitize_filename, get_unique_filename
 from .config import Config
 from .download_state import DownloadState
 
@@ -52,10 +52,16 @@ class Downloader:
         r'(?:/?|[/?]\S+)$', re.IGNORECASE)
     
     def __init__(self, url: str, destination: Path, threads: int = Config.DEFAULT_THREADS):
-        """Initialize downloader"""
+        """Initialize downloader
+        
+        Args:
+            url: URL to download
+            destination: Path to save the download
+            threads: Number of threads to use
+        """
         self._validate_url(url)
         self.url = url
-        self.destination = destination
+        self.destination = Path(destination)  # Ensure it's a Path object
         self.threads = min(threads, Config.MAX_THREADS)
         self.download_id = url
         self.progress = 0
@@ -67,6 +73,9 @@ class Downloader:
         self._lock = threading.Lock()
         self.logger = DownloaderLogger.get_logger()
         self._completion_callback = None
+        
+        # Create destination directory if it doesn't exist
+        self.destination.mkdir(parents=True, exist_ok=True)
         
         # Download statistics tracking
         self.start_time = None
@@ -134,139 +143,79 @@ class Downloader:
         self._completion_callback = callback
     
     def start(self) -> None:
-        """
-        Start the download in a new thread.
-        
-        Raises:
-            NetworkError: If download fails due to network issues
-            FileSystemError: If file cannot be saved
-        """
+        """Start the download"""
         try:
-            self.logger.info(f"Starting download for {self.url}")
-            
-            # Create destination directory if it doesn't exist
-            self.destination.mkdir(parents=True, exist_ok=True)
-            
-            # Configure downloader
-            obj = SmartDL(
+            # Create SmartDL object
+            dl = SmartDL(
                 self.url,
                 str(self.destination),
-                threads=self.threads,
                 progress_bar=False,
-                timeout=30  # Increased from default
+                threads=self.threads
             )
             
-            # Start download in thread
-            thread = threading.Thread(target=self._download, args=(obj,), daemon=True)
-            thread.start()
+            # Get filename from URL or Content-Disposition header
+            filename = dl.get_dest()
+            if not filename:
+                filename = urlparse(self.url).path.split('/')[-1]
             
-        except Exception as e:
-            self.logger.error(f"Failed to start download: {e}", exc_info=True)
-            raise DownloaderError(f"Failed to start download: {str(e)}")
+            # Sanitize filename and ensure it's unique
+            filename = sanitize_filename(filename)
+            dest_path = get_unique_filename(self.destination / filename)
             
-    def _download(self, obj: SmartDL) -> None:
-        """
-        Perform the actual download.
-        
-        Args:
-            obj (SmartDL): SmartDL object
-        
-        Raises:
-            NetworkError: If download fails due to network issues
-            FileSystemError: If file cannot be saved
-            CancellationError: If download is cancelled
-        """
-        try:
-            # Store reference to current download
-            self._current_download = obj
+            # Update SmartDL destination
+            dl.dest = str(dest_path)
             
-            # Set a longer timeout for slow connections
-            obj.timeout = 30  # 30 seconds timeout
-            
-            self.start_time = time.time()
+            # Start download
             self.state = DownloadState.DOWNLOADING
+            self.start_time = time.time()
             
-            # Start the download
-            obj.start(blocking=False)
+            # Setup progress monitoring
+            def progress_callback(progress):
+                if progress.total_size:
+                    percent = (progress.dl_size / progress.total_size) * 100
+                else:
+                    percent = 0
+                    
+                speed = progress.speed if progress.speed else 0
+                self._progress_hook({
+                    'status': 'downloading',
+                    'downloaded_bytes': progress.dl_size,
+                    'total_bytes': progress.total_size,
+                    'speed': speed,
+                    'filename': filename,
+                    'eta': progress.eta if progress.eta else 0
+                })
+            
+            dl.start(blocking=False)  # Non-blocking to allow cancellation
             
             # Monitor progress while downloading
-            while not obj.isFinished() and not self._cancelled:
-                try:
-                    current_time = time.time()
-                    downloaded = obj.get_dl_size()
-                    total = obj.get_final_filesize()
-                    speed_bytes = obj.get_speed(human=False)  # Get raw speed in bytes/s
-                    speed_human = obj.get_speed(human=True)
-                    progress = int(downloaded / total * 100) if total else 0
-                    
-                    # Update statistics
-                    self.stats['timestamps'].append(current_time - self.start_time)
-                    self.stats['speeds'].append(speed_bytes)
-                    self.stats['progress'].append(progress)
-                    self.stats['downloaded'].append(downloaded)
-                    self.stats['peak_speed'] = max(self.stats['peak_speed'], speed_bytes)
-                    self.stats['avg_speed'] = sum(self.stats['speeds']) / len(self.stats['speeds'])
-                    self.stats['total_time'] = current_time - self.start_time
-                    self.stats['total_size'] = total
-                    
-                    # Update progress
-                    self.progress = progress
-                    self.speed = speed_human
-                    
-                    # Call progress callback if set
-                    if self._progress_callback:
-                        dest_path = str(self.destination / obj.get_dest())
-                        self._progress_callback(
-                            self.download_id, progress, speed_human, dest_path, 
-                            total, downloaded, self.stats, self.state
-                        )
-                        
-                    time.sleep(0.1)  # Brief sleep to prevent high CPU usage
-                    
-                except Exception as e:
-                    # Log error but continue monitoring
-                    print(f"Error updating progress: {e}")
-                    
+            while not dl.isFinished() and not self._cancelled:
+                if dl.get_status() == "downloading":
+                    progress_callback(dl)
+                time.sleep(0.1)
+                
             # Handle cancellation
             if self._cancelled:
+                dl.stop()
                 self.state = DownloadState.CANCELLED
-                if self._progress_callback:
-                    self._progress_callback(
-                        self.download_id, self.progress, "", "", 
-                        0, 0, self.stats, self.state
-                    )
                 return
                 
-            # Handle completion
-            if obj.isFinished():
-                if obj.isSuccessful():
-                    self.state = DownloadState.COMPLETED
-                    if self._progress_callback:
-                        dest_path = str(self.destination / obj.get_dest())
-                        self._progress_callback(
-                            self.download_id, 100, "", dest_path, 
-                            obj.get_final_filesize(), obj.get_final_filesize(),
-                            self.stats, self.state
-                        )
-                    if self._completion_callback:
-                        self._completion_callback(self.download_id)
-                else:
-                    self.state = DownloadState.ERROR
-                    self.error_message = str(obj.get_errors()[0]) if obj.get_errors() else "Unknown error"
-                    if self._progress_callback:
-                        self._progress_callback(
-                            self.download_id, self.progress, "", self.error_message,
-                            0, 0, self.stats, self.state
-                        )
-                    
+            # Wait for all threads to finish
+            dl.wait(raise_exceptions=True)
+            
+            # Update final state
+            if dl.isSuccessful():
+                self.state = DownloadState.COMPLETED
+                if self._completion_callback:
+                    self._completion_callback(self.download_id)
+            else:
+                self.state = DownloadState.ERROR
+                self.error_message = "Download failed"
+                
         except Exception as e:
             self.state = DownloadState.ERROR
             self.error_message = str(e)
-            if self._progress_callback:
-                self._progress_callback(
-                    self.download_id, self.progress, "", str(e),
-                    0, 0, self.stats, self.state
-                )
+            raise DownloaderError(f"Download failed: {str(e)}")
     
     def cancel(self) -> None:
         """

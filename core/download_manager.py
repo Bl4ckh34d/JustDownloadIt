@@ -11,6 +11,8 @@ Features:
     - Progress tracking and callback system
     - Download cancellation and cleanup
     - Error handling and retry logic
+    - Unified download ID generation
+    - Active download tracking
 
 Classes:
     DownloadManager: Main class that manages all download operations
@@ -24,10 +26,11 @@ Dependencies:
 """
 
 from pathlib import Path
-from typing import Optional, Callable, Dict, List, Union
+from typing import Optional, Callable, Dict, List, Union, Set
 from queue import Queue
 import threading
 import re
+import uuid
 from urllib.error import URLError as BuiltinURLError
 
 from utils.errors import (
@@ -35,8 +38,8 @@ from utils.errors import (
     InvalidURLError, UnsupportedURLError, YouTubeError
 )
 from .config import Config
-from .downloader import Downloader
-from .youtube import YouTubeDownloader
+from .regular_downloader import Downloader
+from .youtube_downloader import YouTubeDownloader
 from .download_state import DownloadState
 
 class DownloadManager:
@@ -47,7 +50,7 @@ class DownloadManager:
             download_dir: Directory to save downloads to. If None, uses default downloads directory
         """
         # Set download directory
-        self.download_dir = Config.DOWNLOAD_DIR if download_dir is None else download_dir
+        self.download_dir = Config.DOWNLOAD_DIR if download_dir is None else Path(download_dir)
         
         # Create downloads directory if it doesn't exist
         self.download_dir.mkdir(parents=True, exist_ok=True)
@@ -57,13 +60,61 @@ class DownloadManager:
         self.thread_pool = []
         self._stop_flag = False
         self.progress_callback = None  # Initialize progress callback
-    
-    def download(self, url: str, on_progress: Optional[Callable] = None, threads: int = 4) -> None:
+        self._url_to_id_map: Dict[str, str] = {}  # Map URLs to their download IDs
+        
+    def generate_download_id(self, url: str, is_youtube: bool = False) -> str:
+        """Generate a unique download ID.
+        
+        Args:
+            url: Download URL
+            is_youtube: Whether this is a YouTube download
+            
+        Returns:
+            str: Unique download ID
+        """
+        base_id = str(uuid.uuid4())
+        download_id = f"{base_id}_yt" if is_youtube else base_id
+        self._url_to_id_map[url] = download_id
+        return download_id
+        
+    def get_active_downloads(self) -> Set[str]:
+        """Get set of active download IDs.
+        
+        Returns:
+            Set[str]: Set of active download IDs
+        """
+        return set(self.active_downloads.keys())
+        
+    def is_url_downloading(self, url: str) -> bool:
+        """Check if a URL is currently being downloaded.
+        
+        Args:
+            url: URL to check
+            
+        Returns:
+            bool: True if URL is being downloaded
+        """
+        return url in self._url_to_id_map and self._url_to_id_map[url] in self.active_downloads
+        
+    def get_download_id_for_url(self, url: str) -> Optional[str]:
+        """Get download ID for a URL if it exists.
+        
+        Args:
+            url: URL to get ID for
+            
+        Returns:
+            Optional[str]: Download ID if found, None otherwise
+        """
+        return self._url_to_id_map.get(url)
+
+    def download(self, url: str, download_dir: Optional[Union[str, Path]] = None, 
+                 on_progress: Optional[Callable] = None, threads: int = 4) -> None:
         """
         Start a new download.
         
         Args:
             url (str): URL to download
+            download_dir (Optional[Union[str, Path]]): Directory to save download to. If None, uses default
             on_progress (Callable, optional): Function to call with progress updates. Defaults to None
             threads (int, optional): Number of threads to use for download. Defaults to 4
         
@@ -78,7 +129,10 @@ class DownloadManager:
                 raise InvalidURLError("URL cannot be empty")
                 
             # Create downloader
-            downloader = Downloader(url, self.download_dir, threads=min(threads, Config.MAX_THREADS))
+            download_id = self.generate_download_id(url)
+            target_dir = Path(download_dir) if download_dir else self.download_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
+            downloader = Downloader(url, target_dir, threads=min(threads, Config.MAX_THREADS))
             
             # Set progress callback if provided
             if on_progress:
@@ -89,7 +143,7 @@ class DownloadManager:
             downloader.set_completion_callback(self._on_download_complete)
                 
             # Store download object
-            self.active_downloads[url] = downloader
+            self.active_downloads[download_id] = downloader
             
             # Start download
             downloader.start()
@@ -106,18 +160,18 @@ class DownloadManager:
             
         except Exception as e:
             error_msg = f"Failed to start download: {str(e)}"
-            raise NetworkError(error_msg)
+            raise NetworkError(error_msg, url)
     
-    def download_youtube(self, url: str, download_id: str, quality: str = None,
-                        audio_quality: str = None, audio_only: bool = False,
-                        on_progress: Optional[Callable] = None,
+    def download_youtube(self, url: str, download_dir: Optional[Union[str, Path]] = None,
+                        quality: str = None, audio_quality: str = None, 
+                        audio_only: bool = False, on_progress: Optional[Callable] = None,
                         threads: int = Config.DEFAULT_THREADS) -> None:
         """
         Start a YouTube download.
         
         Args:
             url: YouTube URL
-            download_id: Unique download ID
+            download_dir: Directory to save download to. If None, uses default
             quality: Preferred video quality
             audio_quality: Preferred audio quality
             audio_only: If True, only download audio
@@ -136,11 +190,16 @@ class DownloadManager:
                 
             # Build quality string
             preferred_quality = f"{quality if not audio_only else '0p'} + {audio_quality}"
+            
+            # Set target directory
+            target_dir = Path(download_dir) if download_dir else self.download_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
                 
             # Create YouTube downloader
+            download_id = self.generate_download_id(url, is_youtube=True)
             downloader = YouTubeDownloader(
                 url,
-                str(self.download_dir),
+                str(target_dir),
                 preferred_quality=preferred_quality,
                 threads=threads,
                 audio_only=audio_only
