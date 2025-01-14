@@ -55,7 +55,7 @@ class YouTubeProgressBar(BaseWidget):
             self,
             text="Downloading YouTube Video...",
             anchor="w",
-            font=("Helvetica", 11)  
+            font=("Helvetica", 12)  
         )
         
         # Video progress frame
@@ -65,8 +65,8 @@ class YouTubeProgressBar(BaseWidget):
         self.video_label = ctk.CTkLabel(
             self.video_frame,
             text="Video:",
-            width=40,  
-            font=("Helvetica", 10)  
+            width=45,  
+            font=("Helvetica", 11)  
         )
         
         # Video progress container
@@ -75,7 +75,7 @@ class YouTubeProgressBar(BaseWidget):
         # Video progress bar
         self.video_progress = ctk.CTkProgressBar(
             self.video_progress_frame,
-            height=8,  
+            height=6,  
             corner_radius=2  
         )
         self.video_progress.set(0)
@@ -85,7 +85,7 @@ class YouTubeProgressBar(BaseWidget):
             self.video_progress_frame,
             text="0%",
             width=35,  
-            font=("Helvetica", 10)  
+            font=("Helvetica", 11)  
         )
         
         # Video info frame
@@ -96,7 +96,7 @@ class YouTubeProgressBar(BaseWidget):
             self.video_info_frame,
             text="0 B/s",
             anchor="w",
-            font=("Helvetica", 9)  
+            font=("Helvetica", 10)  
         )
         
         # Video size
@@ -104,7 +104,7 @@ class YouTubeProgressBar(BaseWidget):
             self.video_info_frame,
             text="0 MB / 0 MB",
             anchor="e",
-            font=("Helvetica", 9)  
+            font=("Helvetica", 10)  
         )
         
         # Audio progress frame
@@ -114,8 +114,8 @@ class YouTubeProgressBar(BaseWidget):
         self.audio_label = ctk.CTkLabel(
             self.audio_frame,
             text="Audio:",
-            width=40,  
-            font=("Helvetica", 10)  
+            width=45,  
+            font=("Helvetica", 11)  
         )
         
         # Audio progress container
@@ -124,7 +124,7 @@ class YouTubeProgressBar(BaseWidget):
         # Audio progress bar
         self.audio_progress = ctk.CTkProgressBar(
             self.audio_progress_frame,
-            height=8,  
+            height=6,  
             corner_radius=2  
         )
         self.audio_progress.set(0)
@@ -134,7 +134,7 @@ class YouTubeProgressBar(BaseWidget):
             self.audio_progress_frame,
             text="0%",
             width=35,  
-            font=("Helvetica", 10)  
+            font=("Helvetica", 11)  
         )
         
         # Audio info frame
@@ -145,7 +145,7 @@ class YouTubeProgressBar(BaseWidget):
             self.audio_info_frame,
             text="0 B/s",
             anchor="w",
-            font=("Helvetica", 9)  
+            font=("Helvetica", 10)  
         )
         
         # Audio size
@@ -153,7 +153,7 @@ class YouTubeProgressBar(BaseWidget):
             self.audio_info_frame,
             text="0 MB / 0 MB",
             anchor="e",
-            font=("Helvetica", 9)  
+            font=("Helvetica", 10)  
         )
         
         # Control frame
@@ -165,8 +165,8 @@ class YouTubeProgressBar(BaseWidget):
             text="Cancel",
             command=self._on_cancel_click,
             width=50,  
-            height=24,  
-            font=("Helvetica", 10)  
+            height=22,  
+            font=("Helvetica", 11)  
         )
         
         # Close button
@@ -175,23 +175,23 @@ class YouTubeProgressBar(BaseWidget):
             text="Close",
             command=self._on_close_click,
             width=50,  
-            height=24,  
-            font=("Helvetica", 10),  
+            height=22,  
+            font=("Helvetica", 11),  
             state="disabled"
         )
         
     def _setup_layout(self):
         """Setup widget layout."""
         # Title
-        self.title_label.pack(fill="x", padx=8, pady=(6,3))  
+        self.title_label.pack(fill="x", padx=6, pady=(4,2))  
         
         # Video frame
-        self.video_frame.pack(fill="x", padx=8, pady=2)  
+        self.video_frame.pack(fill="x", padx=6, pady=1)  
         self.video_label.pack(side="left")
         
         # Video progress
-        self.video_progress_frame.pack(side="top", fill="x", pady=(0,2))  
-        self.video_progress.pack(side="left", fill="x", expand=True, padx=(0,3))  
+        self.video_progress_frame.pack(side="top", fill="x", pady=(0,1))  
+        self.video_progress.pack(side="left", fill="x", expand=True, padx=(0,2))  
         self.video_percent.pack(side="right")
         
         # Video info
@@ -200,12 +200,12 @@ class YouTubeProgressBar(BaseWidget):
         self.video_size.pack(side="right")
         
         # Audio frame
-        self.audio_frame.pack(fill="x", padx=8, pady=2)  
+        self.audio_frame.pack(fill="x", padx=6, pady=1)  
         self.audio_label.pack(side="left")
         
         # Audio progress
-        self.audio_progress_frame.pack(side="top", fill="x", pady=(0,2))  
-        self.audio_progress.pack(side="left", fill="x", expand=True, padx=(0,3))  
+        self.audio_progress_frame.pack(side="top", fill="x", pady=(0,1))  
+        self.audio_progress.pack(side="left", fill="x", expand=True, padx=(0,2))  
         self.audio_percent.pack(side="right")
         
         # Audio info
@@ -214,8 +214,8 @@ class YouTubeProgressBar(BaseWidget):
         self.audio_size.pack(side="right")
         
         # Control frame
-        self.control_frame.pack(fill="x", padx=8, pady=(3,6))  
-        self.cancel_button.pack(side="left", padx=3)  
+        self.control_frame.pack(fill="x", padx=6, pady=(2,4))  
+        self.cancel_button.pack(side="left", padx=2)  
         self.close_button.pack(side="left")
         
     def update_state(self, state: DownloadState):
@@ -269,18 +269,25 @@ class YouTubeProgressBar(BaseWidget):
             
         # Handle muxing state
         if component == "muxing":
-            # Hide audio components
-            self.audio_frame.grid_remove()
+            # Only hide audio components when muxing starts
+            self.audio_frame.pack_forget()
+            
             # Update video components for muxing
             self.video_label.configure(text="Status:")
-            self.video_progress.configure(progress_color="#2d9d3f")  # Green for muxing
+            self.video_progress.configure(progress_color=self.MUXING_COLOR)  # Green for muxing
+            self.video_progress.set(0)  # Reset progress for muxing
+            
             if progress is not None:
                 self.video_progress.set(progress / 100)
                 self.video_percent.configure(text=f"{progress:.1f}%")
-            if text is not None:
-                self.video_speed.configure(text=text)
-                self.video_size.configure(text="")  # Clear size during muxing
-            self.title_label.configure(text="Muxing...")
+                
+            # Update status text
+            self.video_speed.configure(text="Combining video and audio...")
+            self.video_size.configure(text="")  # Clear size during muxing
+            
+            # Update title
+            self.title_label.configure(text="Muxing Video and Audio...")
+            
             self.update_idletasks()  # Force widget update
             return
             
@@ -288,7 +295,7 @@ class YouTubeProgressBar(BaseWidget):
         if component in ["video", None]:
             # Show video components with original labels
             self.video_label.configure(text="Video:")
-            self.video_progress.configure(progress_color="#1f538d")  # Blue for download
+            self.video_progress.configure(progress_color=self.DOWNLOAD_COLOR)  # Blue for download
             if progress is not None:
                 self.video_progress.set(progress / 100)
                 self.video_percent.configure(text=f"{progress:.1f}%")
@@ -302,8 +309,8 @@ class YouTubeProgressBar(BaseWidget):
             self.update_idletasks()  # Force widget update
                 
         if component == "audio":
-            # Show audio components
-            self.audio_frame.grid()
+            # Always show audio components until muxing starts
+            self.audio_frame.pack()
             if progress is not None:
                 self.audio_progress.set(progress / 100)
                 self.audio_percent.configure(text=f"{progress:.1f}%")
