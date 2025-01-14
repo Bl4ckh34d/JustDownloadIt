@@ -18,6 +18,7 @@ Classes:
     FileSystemError: File system errors
     YouTubeError: YouTube-specific errors
     CancellationError: Download cancellation errors
+    CookieError: Cookie-related errors
 """
 
 import logging
@@ -137,6 +138,18 @@ class CancellationError(DownloaderError):
         )
         super().__init__(context.message, context)
 
+class CookieError(DownloaderError):
+    """Cookie-related errors."""
+    
+    def __init__(self, message: str, browser: Optional[str] = None):
+        context = ErrorContext(
+            error_type="Cookie Error",
+            message=message,
+            details=f"Browser: {browser}" if browser else None,
+            recovery_hint="Try logging into YouTube in your browser first or check browser permissions"
+        )
+        super().__init__(context.message, context)
+
 def handle_download_error(error: Exception) -> None:
     """
     Handle download errors and show appropriate message to user.
@@ -181,6 +194,8 @@ def handle_download_error(error: Exception) -> None:
         messagebox.showerror(error.context.error_type, error.context.message)
     elif isinstance(error, CancellationError):
         messagebox.showinfo(error.context.error_type, error.context.message)
+    elif isinstance(error, CookieError):
+        messagebox.showerror(error.context.error_type, error.context.message)
     elif isinstance(error, urllib.error.URLError):
         messagebox.showerror(
             "Network Error",

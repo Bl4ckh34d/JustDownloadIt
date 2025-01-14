@@ -51,9 +51,9 @@ class ProgressBar(BaseWidget):
             progress=0,
             speed="0 B/s",
             text="",
-            downloaded_size=0,
             total_size=0,
-            state=DownloadState.PENDING
+            downloaded_size=0,
+            state=DownloadState.QUEUED
         )
         
         # Create widgets

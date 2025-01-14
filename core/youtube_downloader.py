@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass
 import tempfile
+import shutil
 
 try:
     import yt_dlp
@@ -46,9 +47,10 @@ try:
 except ImportError:
     browsercookie = None
 
-from utils.errors import YouTubeError, InvalidURLError, DownloaderError
+from utils.errors import YouTubeError, InvalidURLError, DownloaderError, CookieError
 from utils.logger import DownloaderLogger
 from utils.file_utils import sanitize_filename, get_unique_filename
+from utils.download_utils import format_size, validate_url
 from .config import Config
 from .regular_downloader import Downloader
 from .download_state import DownloadState
@@ -58,36 +60,50 @@ def get_youtube_cookies():
     Get YouTube cookies from browser.
     
     Returns:
-        dict: Cookies for YouTube
-    """
-    if not browsercookie:
-        DownloaderLogger.get_logger().warning("browser-cookie3 not installed; cannot load YouTube cookies")
-        return None
+        tuple: (http.cookiejar.CookieJar, str) - Cookie jar with YouTube cookies and browser name or (None, None) if not available
         
-    cookies = None
+    Raises:
+        CookieError: If there's an error accessing browser cookies
+    """
+    logger = DownloaderLogger.get_logger()
     
-    # Try Firefox first
-    try:
-        cookies = browsercookie.firefox(domain_name='.youtube.com')
-        if cookies:
-            DownloaderLogger.get_logger().info("Successfully loaded YouTube cookies from Firefox")
-            return cookies
-    except Exception as e:
-        DownloaderLogger.get_logger().debug(f"Could not load Firefox cookies: {e}")
+    if not browsercookie:
+        logger.warning("browser-cookie3 not installed; cannot load YouTube cookies")
+        return None, None
     
-    # Try Chrome as fallback
-    try:
-        cookies = browsercookie.chrome(domain_name='.youtube.com')
-        if cookies:
-            DownloaderLogger.get_logger().info("Successfully loaded YouTube cookies from Chrome")
-            return cookies
-    except Exception as e:
-        DownloaderLogger.get_logger().debug(f"Could not load Chrome cookies: {e}")
+    # Try browsers in order of preference
+    browsers_to_try = [
+        ('chrome', browsercookie.chrome),
+        ('firefox', browsercookie.firefox),
+        ('chromium', browsercookie.chromium),
+        ('opera', browsercookie.opera),
+        ('edge', browsercookie.edge),
+        ('brave', browsercookie.brave),
+    ]
     
-    if not cookies:
-        DownloaderLogger.get_logger().warning("Could not load cookies from any browser")
+    errors = []
+    for browser_name, browser_func in browsers_to_try:
+        try:
+            cookies = browser_func(domain_name='.youtube.com')
+            if cookies:
+                logger.info(f"Successfully loaded YouTube cookies from {browser_name.title()}")
+                return cookies, browser_name
+        except Exception as e:
+            error_msg = str(e)
+            errors.append((browser_name, error_msg))
+            if "load NSS" in error_msg and browser_name == 'firefox':
+                logger.debug(f"Firefox profile error: {error_msg}")
+            elif "Encryption key" in error_msg and browser_name in ['chrome', 'chromium', 'edge', 'brave']:
+                logger.debug(f"{browser_name.title()} keyring error: {error_msg}")
+            else:
+                logger.debug(f"Could not load {browser_name.title()} cookies: {error_msg}")
     
-    return cookies
+    # If we got here, no browser worked
+    if errors:
+        error_details = "\n".join(f"{browser}: {error}" for browser, error in errors)
+        logger.warning(f"Could not load cookies from any browser:\n{error_details}")
+    
+    return None, None
 
 @dataclass
 class StreamInfo:
@@ -222,17 +238,63 @@ class YouTubeDownloader(Downloader):
             
         Returns:
             tuple: (video_format, audio_format)
+        
+        Raises:
+            YouTubeError: If format extraction fails
         """
         try:
+            # Try to get cookies first
+            cookies_result, browser_name = None, None
+            try:
+                cookies_result, browser_name = get_youtube_cookies()
+            except CookieError as e:
+                self.logger.warning(f"Cookie loading failed: {e.context.message}")
+        
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'extract_flat': False
+                'extract_flat': False,
             }
             
+            # Try with browser cookies if available
+            if browser_name:
+                ydl_opts['cookiesfrombrowser'] = (browser_name,)
+        
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 # Extract video info
-                info = ydl.extract_info(url, download=False)
+                try:
+                    info = ydl.extract_info(url, download=False)
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if 'age-restricted' in error_msg:
+                        if not browser_name:
+                            # If age-restricted and no cookies, provide specific error
+                            raise YouTubeError(
+                                "This video is age-restricted and requires authentication. Please log into YouTube in your browser.",
+                                video_id=url,
+                                error_code="AGE_RESTRICTED"
+                            )
+                        else:
+                            # If we have cookies but still can't access, the account might not be old enough
+                            raise YouTubeError(
+                                f"Age-restricted video not accessible with {browser_name.title()} cookies. Try a different browser or account.",
+                                video_id=url,
+                                error_code="AGE_RESTRICTED_AUTH_FAILED"
+                            )
+                    elif 'private video' in error_msg:
+                        raise YouTubeError(
+                            "This video is private. Make sure you're logged into an account with access.",
+                            video_id=url,
+                            error_code="PRIVATE_VIDEO"
+                        )
+                    elif 'sign in' in error_msg:
+                        raise YouTubeError(
+                            "This video requires authentication. Please log into YouTube in your browser.",
+                            video_id=url,
+                            error_code="AUTH_REQUIRED"
+                        )
+                    raise
+            
                 self.video_title = info.get('title', 'Unknown Title')
                 
                 # Get available formats
@@ -244,10 +306,10 @@ class YouTubeDownloader(Downloader):
                     if f.get('acodec', 'none') != 'none' and f.get('vcodec') == 'none':
                         if not audio_format or f.get('abr', 0) > audio_format.get('abr', 0):
                             audio_format = f
-                
+            
                 if self.audio_only:
                     return None, audio_format
-                    
+                
                 # Find best video format based on quality preference
                 video_format = None
                 target_height = int(self.video_quality.replace('p', '')) if self.video_quality != 'highest' else float('inf')
@@ -266,11 +328,13 @@ class YouTubeDownloader(Downloader):
                             if height <= target_height:
                                 if not video_format or height > video_format.get('height', 0):
                                     video_format = f
-                
+            
                 return video_format, audio_format
-                
+            
         except Exception as e:
-            raise YouTubeError(f"Failed to extract video formats: {e}")
+            if isinstance(e, YouTubeError):
+                raise
+            raise YouTubeError(f"Failed to extract video formats: {str(e)}", video_id=url)
 
     def _download(self, url: str, destination: str):
         """
@@ -293,11 +357,11 @@ class YouTubeDownloader(Downloader):
             # Download streams
             if self.audio_only:
                 # Audio only - download and convert directly
-                self._download_video(
-                    video_format=None,
-                    audio_format=audio_format,
-                    output_path=output_path,
-                    audio_path=audio_path
+                self._download_stream(
+                    url=url,
+                    format_id=audio_format['format_id'],
+                    target_path=output_path,
+                    is_audio=True
                 )
             else:
                 # Video + Audio - download both and mux
@@ -310,11 +374,13 @@ class YouTubeDownloader(Downloader):
                 )
                 
         except Exception as e:
-            self.logger.error(f"Error downloading YouTube video: {e}")
-            raise YouTubeError(f"Failed to download video: {e}")
+            if isinstance(e, YouTubeError):
+                raise
+            video_id = url.split("v=")[-1] if "v=" in url else url
+            raise YouTubeError(f"Error downloading YouTube video: {str(e)}", video_id=video_id)
 
     def _download_video(self, video_format: dict, audio_format: dict = None, output_path: str = None,
-                   video_path: str = None, audio_path: str = None):
+                       video_path: str = None, audio_path: str = None):
         """
         Download video and optionally audio streams.
         
@@ -326,172 +392,317 @@ class YouTubeDownloader(Downloader):
             audio_path: Output path for audio stream (optional)
         """
         try:
-            # Create temporary directory for intermediate files
+            # Create temporary directory for downloads
             with tempfile.TemporaryDirectory() as temp_dir:
-                # Create unique temp paths for video and audio
                 temp_dir_path = Path(temp_dir)
-                
-                # Store actual paths after getting unique names
-                actual_video_path = None
-                actual_audio_path = None
+                self.logger.info(f"Created temporary directory for download: {temp_dir}")
                 
                 # Prepare download threads
                 download_threads = []
-                download_events = []
                 
                 # Setup video download if needed
+                actual_video_path = None
                 if video_format:
-                    # Get unique name for video using download_id
-                    video_temp_name = f"{self.video_title}_{self.download_id}_video.mp4"
-                    actual_video_path = str(get_unique_filename(temp_dir_path / video_temp_name)) if not video_path else video_path
-                    video_done = threading.Event()
+                    # Use simple temporary names
+                    video_temp_name = f"video_{self.download_id}.mp4"
+                    actual_video_path = str(temp_dir_path / video_temp_name) if not video_path else video_path
+                    self.logger.info(f"Starting video download to: {actual_video_path}")
+                    self.logger.debug(f"Video format: {video_format.get('format_id')} - {video_format.get('ext')} - {video_format.get('height')}p")
                     video_thread = threading.Thread(
-                        target=self.download_stream,
-                        args=(video_format, actual_video_path),
+                        target=self._download_stream,
+                        args=(self.url, video_format['format_id'], actual_video_path),
                         kwargs={'is_audio': False}
                     )
                     download_threads.append(video_thread)
-                    download_events.append(video_done)
                     video_thread.start()
                 
                 # Setup audio download if needed
+                actual_audio_path = None
                 if audio_format:
-                    # Get unique name for audio using download_id
-                    audio_temp_name = f"{self.video_title}_{self.download_id}_audio.m4a"
-                    actual_audio_path = str(get_unique_filename(temp_dir_path / audio_temp_name)) if not audio_path else audio_path
-                    audio_done = threading.Event()
+                    # Use simple temporary names
+                    audio_temp_name = f"audio_{self.download_id}.m4a"
+                    actual_audio_path = str(temp_dir_path / audio_temp_name) if not audio_path else audio_path
+                    self.logger.info(f"Starting audio download to: {actual_audio_path}")
+                    self.logger.debug(f"Audio format: {audio_format.get('format_id')} - {audio_format.get('ext')} - {audio_format.get('abr')}kbps")
                     audio_thread = threading.Thread(
-                        target=self.download_stream,
-                        args=(audio_format, actual_audio_path),
+                        target=self._download_stream,
+                        args=(self.url, audio_format['format_id'], actual_audio_path),
                         kwargs={'is_audio': True}
                     )
                     download_threads.append(audio_thread)
-                    download_events.append(audio_done)
                     audio_thread.start()
                 
                 # Wait for all downloads to complete
                 for thread in download_threads:
                     thread.join()
+                self.logger.info("All download threads completed")
                 
                 # If no output path specified, create one
                 if not output_path:
                     filename = f"{sanitize_filename(self.video_title)}.{'mp3' if self.audio_only else 'mp4'}"
                     output_path = str(get_unique_filename(self.download_dir / filename))
+                    self.logger.info(f"Generated output path: {output_path}")
                 
                 # If only downloading audio
-                if self.audio_only and actual_audio_path:
+                if self.audio_only and actual_audio_path and os.path.exists(actual_audio_path):
+                    self.logger.info("Audio-only download - moving audio file to final destination")
                     # Just move audio file to output path
                     if os.path.exists(output_path):
+                        self.logger.debug(f"Removing existing file at {output_path}")
                         os.remove(output_path)
-                    os.rename(actual_audio_path, output_path)
+                    shutil.move(actual_audio_path, output_path)
+                    self.logger.info(f"Successfully moved audio file to: {output_path}")
                     return
                 
                 # Combine streams if we have both
-                if video_format and audio_format and actual_video_path and actual_audio_path:
-                    # Create unique temp path for combined file using download_id
-                    combined_temp_name = f"{self.video_title}_{self.download_id}_combined.mp4"
-                    temp_combined = str(get_unique_filename(temp_dir_path / combined_temp_name))
+                if (video_format and audio_format and actual_video_path and actual_audio_path and 
+                    os.path.exists(actual_video_path) and os.path.exists(actual_audio_path)):
+                    self.logger.info("Starting muxing process for video and audio streams")
+                    self.logger.debug(f"Video file exists: {os.path.exists(actual_video_path)}, size: {os.path.getsize(actual_video_path)} bytes")
+                    self.logger.debug(f"Audio file exists: {os.path.exists(actual_audio_path)}, size: {os.path.getsize(actual_audio_path)} bytes")
                     
-                    # Combine video and audio using ffmpeg
+                    # Create simple temp path for combined file
+                    temp_combined = str(temp_dir_path / f"combined_{self.download_id}.mp4")
+                    
+                    # Add progress flag for FFmpeg
                     cmd = [
                         'ffmpeg', '-y',
-                        '-i', actual_video_path,  # Use actual video path
-                        '-i', actual_audio_path,  # Use actual audio path
-                        '-c', 'copy',
+                        '-i', actual_video_path,
+                        '-i', actual_audio_path,
+                        '-c:v', 'copy',  # Copy video codec
+                        '-c:a', 'aac',   # Use AAC for audio
+                        '-strict', 'experimental',
+                        '-map', '0:v:0',  # Map first video stream from first input
+                        '-map', '1:a:0',  # Map first audio stream from second input
+                        '-stats',  # Print progress to stderr
                         temp_combined
                     ]
+                    
+                    self.logger.debug(f"FFmpeg command: {' '.join(cmd)}")
                     
                     process = subprocess.Popen(
                         cmd,
                         stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE
+                        stderr=subprocess.PIPE,
+                        bufsize=1,
+                        universal_newlines=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW  # Hide console window
                     )
                     
-                    stdout, stderr = process.communicate()
+                    # Read progress output
+                    duration = None
+                    frame_count = 0
+                    last_progress_update = time.time()
                     
-                    if process.returncode != 0:
-                        raise YouTubeError(f"Failed to combine streams: {stderr.decode()}")
+                    # First get duration from stderr
+                    while True:
+                        err_line = process.stderr.readline()
+                        if not err_line:
+                            break
+                            
+                        if 'Duration:' in err_line:
+                            try:
+                                # Parse duration in format Duration: 00:00:00.00
+                                time_str = err_line.split('Duration: ')[1].split(',')[0].strip()
+                                h, m, s = map(float, time_str.split(':'))
+                                duration = h * 3600 + m * 60 + s
+                                self.logger.info(f"Total duration to process: {duration:.2f} seconds")
+                                break
+                            except Exception as e:
+                                self.logger.warning(f"Could not parse duration: {str(e)}")
+                                break
+                    
+                    # Monitor stderr for progress
+                    while process.poll() is None:
+                        err_line = process.stderr.readline()
+                        if not err_line:
+                            continue
+                            
+                        err_line = err_line.strip()
+                        if not err_line:
+                            continue
+                            
+                        self.logger.debug(f"FFmpeg output: {err_line}")
+                        
+                        # Skip state lines
+                        if err_line == "PROCESSING":
+                            continue
+                            
+                        # Parse frame progress
+                        if 'frame=' in err_line and 'time=' in err_line and 'speed=' in err_line:
+                            try:
+                                # Extract time in format HH:MM:SS.ms
+                                time_str = err_line.split('time=')[1].split(' ')[0].strip()
+                                if ':' in time_str:
+                                    h, m, s = map(float, time_str.split(':'))
+                                    time_processed = h * 3600 + m * 60 + s
+                                    
+                                    if duration and time_processed <= duration:
+                                        progress = (time_processed / duration) * 100
+                                        
+                                        # Only update progress every 100ms to avoid GUI freezing
+                                        current_time = time.time()
+                                        if current_time - last_progress_update >= 0.1:
+                                            # Extract speed
+                                            speed = "N/A"
+                                            try:
+                                                speed = err_line.split('speed=')[1].split('x')[0].strip() + "x"
+                                            except:
+                                                pass
+                                                
+                                            self.logger.info(f"Muxing Progress: {progress:>6.1f}% | Time: {time_processed:>6.1f}/{duration:<6.1f}s | Speed: {speed}")
+                                            
+                                            # Update progress through callback
+                                            if self.progress_callback:
+                                                self.progress_callback(
+                                                    progress=progress,
+                                                    speed=speed,
+                                                    text=f"Muxing: {progress:.1f}%",
+                                                    total_size=100,
+                                                    downloaded_size=progress,
+                                                    stats=None,
+                                                    state=DownloadState.PROCESSING,
+                                                    component="muxing"
+                                                )
+                                            last_progress_update = current_time
+                                            
+                                # Also track frame count for progress estimation if duration is unknown
+                                frame_str = err_line.split('frame=')[1].split(' ')[0].strip()
+                                frame_count = int(frame_str)
+                                
+                            except Exception as e:
+                                self.logger.debug(f"Could not parse progress from line: {err_line}")
+                        
+                        # Log any errors
+                        elif 'error' in err_line.lower():
+                            self.logger.error(f"FFmpeg error: {err_line}")
+                    
+                    # Get final status
+                    returncode = process.wait()
+                    if returncode != 0:
+                        error_msg = process.stderr.read()
+                        if isinstance(error_msg, bytes):
+                            error_msg = error_msg.decode(errors='replace')
+                        self.logger.error(f"FFmpeg error: {error_msg}")
+                        raise YouTubeError(
+                            f"Failed to combine streams. FFmpeg error code: {returncode}",
+                            video_id=self.url.split('v=')[1]
+                        )
+                        
+                    # Update progress to 100% when done
+                    if self.progress_callback:
+                        self.progress_callback(
+                            progress=100,
+                            speed="",
+                            text="Muxing complete",
+                            total_size=100,
+                            downloaded_size=100,
+                            stats=None,
+                            state=DownloadState.COMPLETED,
+                            component="muxing"
+                        )
+                    
+                    # Verify the combined file exists and has size
+                    if not os.path.exists(temp_combined):
+                        self.logger.error("Combined file was not created by FFmpeg")
+                        raise YouTubeError(
+                            "Failed to create combined video file - file not found",
+                            video_id=self.url.split('v=')[1]
+                        )
+                    
+                    combined_size = os.path.getsize(temp_combined)
+                    if combined_size == 0:
+                        self.logger.error("Combined file was created but has zero size")
+                        raise YouTubeError(
+                            "Failed to create combined video file - file is empty",
+                            video_id=self.url.split('v=')[1]
+                        )
+                        
+                    self.logger.info(f"Successfully muxed video and audio. Combined file size: {combined_size} bytes")
                         
                     # Move combined file to final destination
                     if os.path.exists(output_path):
+                        self.logger.debug(f"Removing existing file at {output_path}")
                         os.remove(output_path)
-                    os.rename(temp_combined, output_path)
-                elif actual_video_path:
+                    shutil.move(temp_combined, output_path)
+                    self.logger.info(f"Successfully moved combined file to: {output_path}")
+                    
+                    # Clean up temporary files
+                    try:
+                        if os.path.exists(actual_video_path):
+                            os.remove(actual_video_path)
+                            self.logger.debug(f"Cleaned up temporary video file: {actual_video_path}")
+                        if os.path.exists(actual_audio_path):
+                            os.remove(actual_audio_path)
+                            self.logger.debug(f"Cleaned up temporary audio file: {actual_audio_path}")
+                    except Exception as e:
+                        self.logger.warning(f"Error cleaning up temporary files: {str(e)}")
+                    
+                elif actual_video_path and os.path.exists(actual_video_path):
+                    self.logger.info("Video-only download - moving video file to final destination")
                     # Just move video file to output path
                     if os.path.exists(output_path):
+                        self.logger.debug(f"Removing existing file at {output_path}")
                         os.remove(output_path)
-                    os.rename(actual_video_path, output_path)
-                    
+                    shutil.move(actual_video_path, output_path)
+                    self.logger.info(f"Successfully moved video file to: {output_path}")
+                else:
+                    error_msg = "No valid video or audio files found after download"
+                    self.logger.error(error_msg)
+                    raise YouTubeError(
+                        error_msg,
+                        video_id=self.url.split('v=')[1]
+                    )
+                
         except Exception as e:
-            raise YouTubeError(f"Failed to download video: {str(e)}")
+            self.logger.error(f"Error in download_video: {e}")
+            if isinstance(e, YouTubeError):
+                raise
+            raise YouTubeError(str(e), video_id=self.url.split('v=')[1])
 
-    def download_stream(self, format_info: dict, output_path: str, is_audio: bool = False) -> None:
+    def _download_stream(self, url: str, format_id: str, target_path: str, is_audio: bool = False) -> None:
         """
         Download a single stream (video or audio).
         
         Args:
-            format_info: Format information dictionary from yt-dlp
-            output_path: Path to save the stream
+            url: YouTube URL
+            format_id: Format ID
+            target_path: Path to save the stream
             is_audio: Whether this is an audio stream
         """
         try:
-            self.logger.debug(f"Starting download of {'audio' if is_audio else 'video'} stream to {output_path}")
+            self.logger.info(f"Starting download of {'audio' if is_audio else 'video'} stream to {target_path}")
             
-            # Store download progress state
-            self._current_progress = {
-                'downloaded': 0,
-                'total': format_info.get('filesize', 0),
-                'speed': 0,
-                'status': 'downloading'
-            }
-
+            # Create progress hook
             def progress_hook(d):
                 try:
-                    self.logger.debug(f"Progress hook called with status: {d['status']}")
+                    if d['status'] not in ['downloading', 'finished']:
+                        self.logger.debug(f"Progress hook status: {d['status']}")
+                        return
 
-                    # Update current progress with safe float conversion
-                    speed = d.get('speed')
-                    if speed is not None:
-                        try:
-                            speed = float(speed)
-                        except (ValueError, TypeError):
-                            speed = 0
-                    else:
-                        speed = 0
-                         
+                    # Get downloaded bytes and total bytes
                     downloaded = d.get('downloaded_bytes', 0)
-                    if downloaded is not None:
-                        try:
-                            downloaded = float(downloaded)
-                        except (ValueError, TypeError):
-                            downloaded = 0
-                             
                     total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-                    if total is not None:
-                        try:
-                            total = float(total)
-                        except (ValueError, TypeError):
-                            total = 0
-
-                    self._current_progress.update({
-                        'downloaded': downloaded,
-                        'total': total,
-                        'speed': speed,
-                        'status': d['status']
-                    })
+                    
+                    # Get download speed
+                    speed = d.get('speed', 0)
+                    if speed is None:
+                        speed = 0
                     
                     # Calculate progress percentage
-                    if total > 0:
-                        progress = (downloaded / total) * 100
-                    else:
-                        progress = 0
-                         
+                    progress = (downloaded / total * 100) if total > 0 else 0
+                    
                     # Format speed string
-                    speed_str = f"{self._format_size(speed)}/s" if speed else ""
+                    speed_str = f"{format_size(speed)}/s" if speed > 0 else ""
                     
                     # Call progress callback with component-specific progress
                     if self.progress_callback:
-                        state = DownloadState.DOWNLOADING if d['status'] == 'downloading' else DownloadState.COMPLETED
+                        state = DownloadState.COMPLETED if d['status'] == 'finished' else DownloadState.DOWNLOADING
+                        
+                        self.logger.info(
+                            f"Progress update for {'audio' if is_audio else 'video'}: "
+                            f"{progress:.1f}% at {speed_str}"
+                        )
                         
                         # For audio-only downloads, don't specify component
                         if self.audio_only:
@@ -501,13 +712,7 @@ class YouTubeDownloader(Downloader):
                                 text=f"Downloading {self.video_title}",
                                 total_size=total,
                                 downloaded_size=downloaded,
-                                stats={
-                                    'peak_speed': speed,
-                                    'avg_speed': speed,
-                                    'total_time': 0,
-                                    'timestamps': [],
-                                    'speeds': []
-                                },
+                                stats=None,
                                 state=state
                             )
                         else:
@@ -515,157 +720,49 @@ class YouTubeDownloader(Downloader):
                             self.progress_callback(
                                 progress=progress,
                                 speed=speed_str,
-                                text=f"Downloading {self.video_title} ({'audio' if is_audio else 'video'})",
+                                text=f"Downloading {self.video_title}",
                                 total_size=total,
                                 downloaded_size=downloaded,
-                                stats={
-                                    'peak_speed': speed,
-                                    'avg_speed': speed,
-                                    'total_time': 0,
-                                    'timestamps': [],
-                                    'speeds': []
-                                },
+                                stats=None,
                                 state=state,
                                 component="audio" if is_audio else "video"
                             )
                 except Exception as e:
                     self.logger.error(f"Error in progress hook: {e}")
 
+            # Download options
             ydl_opts = {
-                'format': format_info['format_id'],
-                'outtmpl': output_path,
-                'quiet': True,
-                'no_warnings': True,
-                'progress_hooks': [progress_hook]
+                'format': format_id,
+                'outtmpl': target_path,
+                'quiet': False,
+                'progress_hooks': [progress_hook],
+                'retries': 10,
+                'fragment_retries': 10,
+                'retry_sleep': lambda attempt: 2 ** (attempt - 1),
+                'socket_timeout': 30,
+                'http_chunk_size': 10 * 1024 * 1024,  # 10MB chunks
+                'noprogress': False,
+                'no_warnings': False,
+                'verbose': True,
+                'ignoreerrors': False,
+                'nocheckcertificate': True,
+                'geo_bypass': True,
+                'geo_bypass_country': 'US',
+                'cookiesfrombrowser': ('firefox',),
+                'extractor_retries': 3,
+                'file_access_retries': 3,
+                'hls_prefer_native': True,
+                'hls_use_mpegts': True,
+                'external_downloader_args': ['--max-retries', '10']
             }
-            
-            # Start download in a separate thread
-            download_thread = threading.Thread(target=lambda: yt_dlp.YoutubeDL(ydl_opts).download([self.url]))
-            download_thread.start()
-            
-            # Monitor progress in main thread
-            while download_thread.is_alive() and not self._stop_flag:
-                if self._current_progress['status'] == 'downloading':
-                    downloaded = self._current_progress['downloaded']
-                    total = self._current_progress['total']
-                    speed = self._current_progress['speed']
-                    
-                    if total and downloaded:
-                        self.logger.debug(f"Progress: {downloaded}/{total} at {speed}/s")
-                
-                time.sleep(0.1)  # Brief sleep to prevent high CPU usage
-                
-            # Wait for download thread to finish
-            download_thread.join()
-            self.logger.debug(f"Download thread finished for {'audio' if is_audio else 'video'} stream")
-            
-            # Send final progress update
-            if self.progress_callback:
-                # For audio-only downloads, don't specify component
-                if self.audio_only:
-                    self.progress_callback(
-                        progress=100.0,
-                        speed="",
-                        text=f"Download complete",
-                        total_size=self._current_progress['total'],
-                        downloaded_size=self._current_progress['total'],
-                        stats=None,
-                        state=DownloadState.COMPLETED
-                    )
-                else:
-                    # For video downloads, specify component
-                    self.progress_callback(
-                        progress=100.0,
-                        speed="",
-                        text=f"{'Audio' if is_audio else 'Video'} download complete",
-                        total_size=self._current_progress['total'],
-                        downloaded_size=self._current_progress['total'],
-                        stats=None,
-                        state=DownloadState.COMPLETED,
-                        component="audio" if is_audio else "video"
-                    )
+
+            # Download stream
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
                 
         except Exception as e:
-            self.logger.error(f"Error in download_stream: {e}")
-            video_id = extract_video_id(self.url) or "unknown"
-            raise YouTubeError(f"Error downloading stream: {e}", video_id)
-
-    def _format_progress_hook(self, d: dict, id_: str, is_audio: bool = False, format_size: int = 0) -> None:
-        """
-        Format the progress hook data for the progress callback.
-        
-        Args:
-            d: Progress hook data
-            id_: Download ID
-            is_audio: Whether this is an audio stream (optional)
-            format_size: Total size of the format (optional)
-        """
-        if not self.progress_callback:
-            return
-            
-        try:
-            status = d['status']
-            
-            if status == 'downloading':
-                downloaded = d.get('downloaded_bytes', 0)
-                total = d.get('total_bytes') or d.get('total_bytes_estimate', format_size)
-                speed = d.get('speed', 0)
-                
-                if total:
-                    progress = (downloaded / total) * 100
-                else:
-                    progress = 0
-                    
-                speed_str = f"{self._format_size(speed)}/s" if speed else ""
-                text = f"Downloading {self._format_size(downloaded)}/{self._format_size(total)}"
-                
-                self.progress_callback(
-                    progress=progress,
-                    speed=speed_str,
-                    text=text,
-                    total_size=total,
-                    downloaded_size=downloaded,
-                    stats={
-                        'peak_speed': speed,
-                        'avg_speed': speed,
-                        'total_time': 0,
-                        'timestamps': [],
-                        'speeds': []
-                    },
-                    state=DownloadState.DOWNLOADING,
-                    component="audio" if self.audio_only or is_audio else "video"
-                )
-                
-            elif status == 'finished':
-                self.progress_callback(
-                    progress=100.0,
-                    speed="",
-                    text="Download complete",
-                    total_size=format_size,
-                    downloaded_size=format_size,
-                    stats=None,
-                    state=DownloadState.COMPLETED,
-                    component="audio" if self.audio_only or is_audio else "video"
-                )
-                
-        except Exception as e:
-            self.logger.error(f"Error in progress hook: {e}")
-
-    def _format_size(self, size: float) -> str:
-        """
-        Format size in bytes to human readable string.
-        
-        Args:
-            size: Size in bytes
-        
-        Returns:
-            str: Formatted size string (e.g., "1.5 GB")
-        """
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size < 1024:
-                return f"{size:.1f}{unit}"
-            size /= 1024
-        return f"{size:.1f}TB"
+            self.logger.error(f"Error downloading stream: {e}")
+            raise
 
     def cancel(self):
         """

@@ -308,51 +308,16 @@ class DownloaderApp(ctk.CTk):
                                 total_size: float = 0, downloaded_size: float = 0,
                                 stats: dict = None, state: DownloadState = DownloadState.DOWNLOADING,
                                 **kwargs):
-                # Store reference to outer self for audio_only_var access
-                app = self
-                
                 # Create a state object with all required attributes
                 class DownloadProgress:
                     def __init__(self):
                         self.state = state
-                        # For audio-only YouTube downloads, treat it like a regular download
-                        if check_link_type(url) == 'youtube' and app.audio_only_var.get():
-                            self.progress = progress
-                            self.speed = speed
-                            self.text = text
-                            self.downloaded_size = downloaded_size
-                            self.total_size = total_size
-                        # Handle video/audio components for YouTube video downloads
-                        elif 'component' in kwargs:
-                            if kwargs['component'] == 'video':
-                                self.video_progress = progress
-                                self.video_speed = speed
-                                self.video_text = text
-                                self.video_size = total_size
-                                self.video_downloaded = downloaded_size
-                                self.audio_progress = 0
-                                self.audio_speed = "0 B/s"
-                                self.audio_text = ""
-                                self.audio_size = 0
-                                self.audio_downloaded = 0
-                            else:  # audio
-                                self.audio_progress = progress
-                                self.audio_speed = speed
-                                self.audio_text = text
-                                self.audio_size = total_size
-                                self.audio_downloaded = downloaded_size
-                                self.video_progress = 0
-                                self.video_speed = "0 B/s"
-                                self.video_text = ""
-                                self.video_size = 0
-                                self.video_downloaded = 0
-                        else:
-                            # Regular download
-                            self.progress = progress
-                            self.speed = speed
-                            self.text = text
-                            self.downloaded_size = downloaded_size
-                            self.total_size = total_size
+                        self.progress = progress
+                        self.speed = speed
+                        self.text = text
+                        self.downloaded_size = downloaded_size
+                        self.total_size = total_size
+                        self.component = kwargs.get('component', None)
                 
                 self.on_progress(download_id, DownloadProgress())
             
@@ -360,18 +325,17 @@ class DownloaderApp(ctk.CTk):
             if check_link_type(url) == 'youtube':
                 self.manager.download_youtube(
                     url,
-                    download_dir=target_dir,
                     quality=self.video_quality_var.get() if not self.audio_only_var.get() else None,
                     audio_quality=self.audio_quality_var.get(),
                     audio_only=self.audio_only_var.get(),
-                    on_progress=progress_callback,
-                    threads=self.threads_var.get()
+                    threads=self.threads_var.get(),
+                    progress_callback=progress_callback
                 )
             else:
                 self.manager.download(
                     url,
                     download_dir=target_dir,
-                    on_progress=progress_callback,
+                    progress_callback=progress_callback,
                     threads=self.threads_var.get()
                 )
                 

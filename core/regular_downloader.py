@@ -37,6 +37,7 @@ from utils.errors import (
 )
 from utils.logger import DownloaderLogger
 from utils.file_utils import sanitize_filename, get_unique_filename
+from utils.download_utils import validate_url
 from .config import Config
 from .download_state import DownloadState
 
@@ -59,14 +60,14 @@ class Downloader:
             destination: Path to save the download
             threads: Number of threads to use
         """
-        self._validate_url(url)
+        validate_url(url)
         self.url = url
         self.destination = Path(destination)  # Ensure it's a Path object
         self.threads = min(threads, Config.MAX_THREADS)
         self.download_id = url
         self.progress = 0
         self.speed = ""
-        self.state = DownloadState.PENDING
+        self.state = DownloadState.QUEUED
         self.error_message = None
         self._progress_callback = None
         self._cancelled = False
@@ -89,39 +90,6 @@ class Downloader:
             'total_time': 0,   # Total download time in seconds
             'total_size': 0,   # Total size in bytes
         }
-    
-    def _validate_url(self, url: str) -> None:
-        """
-        Validate a URL string.
-        
-        Args:
-            url (str): URL to validate
-            
-        Raises:
-            InvalidURLError: If URL is invalid
-            UnsupportedURLError: If URL scheme is not supported
-        """
-        # Clean the URL first
-        url = url.strip()
-        
-        if not url:
-            raise InvalidURLError("URL cannot be empty")
-            
-        # Basic format check before parsing
-        if not url.startswith(('http://', 'https://')):
-            raise UnsupportedURLError("Only HTTP/HTTPS URLs are supported")
-            
-        # Check URL format
-        if not self.URL_PATTERN.match(url):
-            raise InvalidURLError("Please enter a valid URL (e.g., https://example.com)")
-            
-        # Parse URL and check scheme
-        try:
-            parsed = urlparse(url)
-            if not parsed.netloc:  # Check if there's a valid domain
-                raise InvalidURLError("URL must contain a valid domain")
-        except Exception as e:
-            raise InvalidURLError(f"Invalid URL format: {str(e)}")
     
     def set_progress_callback(self, callback: Callable) -> None:
         """

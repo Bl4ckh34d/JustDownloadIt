@@ -26,6 +26,10 @@ class YouTubeProgressBar(BaseWidget):
         self.on_cancel = on_cancel
         self.on_close = on_close
         
+        # Color constants
+        self.DOWNLOAD_COLOR = "#1f538d"  # Blue
+        self.MUXING_COLOR = "#2d9d3f"    # Green
+        
         # Initialize state
         self.set_state(
             download_id=download_id,
@@ -37,7 +41,7 @@ class YouTubeProgressBar(BaseWidget):
             audio_text="",
             video_size=0,
             audio_size=0,
-            state=DownloadState.PENDING
+            state=DownloadState.QUEUED
         )
         
         # Create widgets
@@ -51,100 +55,118 @@ class YouTubeProgressBar(BaseWidget):
             self,
             text="Downloading YouTube Video...",
             anchor="w",
-            font=("Helvetica", 12, "bold")
+            font=("Helvetica", 11)  
         )
         
         # Video progress frame
-        self.video_frame = ctk.CTkFrame(self)
+        self.video_frame = ctk.CTkFrame(self, fg_color="transparent")  
         
         # Video label
         self.video_label = ctk.CTkLabel(
             self.video_frame,
             text="Video:",
-            width=50
+            width=40,  
+            font=("Helvetica", 10)  
         )
         
         # Video progress container
-        self.video_progress_frame = ctk.CTkFrame(self.video_frame)
+        self.video_progress_frame = ctk.CTkFrame(self.video_frame, fg_color="transparent")  
         
         # Video progress bar
-        self.video_progress = ctk.CTkProgressBar(self.video_progress_frame)
+        self.video_progress = ctk.CTkProgressBar(
+            self.video_progress_frame,
+            height=8,  
+            corner_radius=2  
+        )
         self.video_progress.set(0)
         
         # Video progress percentage
         self.video_percent = ctk.CTkLabel(
             self.video_progress_frame,
             text="0%",
-            width=50
+            width=35,  
+            font=("Helvetica", 10)  
         )
         
         # Video info frame
-        self.video_info_frame = ctk.CTkFrame(self.video_frame)
+        self.video_info_frame = ctk.CTkFrame(self.video_frame, fg_color="transparent")  
         
         # Video speed
         self.video_speed = ctk.CTkLabel(
             self.video_info_frame,
             text="0 B/s",
-            anchor="w"
+            anchor="w",
+            font=("Helvetica", 9)  
         )
         
         # Video size
         self.video_size = ctk.CTkLabel(
             self.video_info_frame,
             text="0 MB / 0 MB",
-            anchor="e"
+            anchor="e",
+            font=("Helvetica", 9)  
         )
         
         # Audio progress frame
-        self.audio_frame = ctk.CTkFrame(self)
+        self.audio_frame = ctk.CTkFrame(self, fg_color="transparent")  
         
         # Audio label
         self.audio_label = ctk.CTkLabel(
             self.audio_frame,
             text="Audio:",
-            width=50
+            width=40,  
+            font=("Helvetica", 10)  
         )
         
         # Audio progress container
-        self.audio_progress_frame = ctk.CTkFrame(self.audio_frame)
+        self.audio_progress_frame = ctk.CTkFrame(self.audio_frame, fg_color="transparent")  
         
         # Audio progress bar
-        self.audio_progress = ctk.CTkProgressBar(self.audio_progress_frame)
+        self.audio_progress = ctk.CTkProgressBar(
+            self.audio_progress_frame,
+            height=8,  
+            corner_radius=2  
+        )
         self.audio_progress.set(0)
         
         # Audio progress percentage
         self.audio_percent = ctk.CTkLabel(
             self.audio_progress_frame,
             text="0%",
-            width=50
+            width=35,  
+            font=("Helvetica", 10)  
         )
         
         # Audio info frame
-        self.audio_info_frame = ctk.CTkFrame(self.audio_frame)
+        self.audio_info_frame = ctk.CTkFrame(self.audio_frame, fg_color="transparent")  
         
         # Audio speed
         self.audio_speed = ctk.CTkLabel(
             self.audio_info_frame,
             text="0 B/s",
-            anchor="w"
+            anchor="w",
+            font=("Helvetica", 9)  
         )
         
         # Audio size
         self.audio_size = ctk.CTkLabel(
             self.audio_info_frame,
             text="0 MB / 0 MB",
-            anchor="e"
+            anchor="e",
+            font=("Helvetica", 9)  
         )
         
         # Control frame
-        self.control_frame = ctk.CTkFrame(self)
+        self.control_frame = ctk.CTkFrame(self, fg_color="transparent")  
         
         # Cancel button
         self.cancel_button = ctk.CTkButton(
             self.control_frame,
             text="Cancel",
             command=self._on_cancel_click,
-            width=60
+            width=50,  
+            height=24,  
+            font=("Helvetica", 10)  
         )
         
         # Close button
@@ -152,22 +174,24 @@ class YouTubeProgressBar(BaseWidget):
             self.control_frame,
             text="Close",
             command=self._on_close_click,
-            width=60,
+            width=50,  
+            height=24,  
+            font=("Helvetica", 10),  
             state="disabled"
         )
         
     def _setup_layout(self):
         """Setup widget layout."""
         # Title
-        self.title_label.pack(fill="x", padx=10, pady=(10,5))
+        self.title_label.pack(fill="x", padx=8, pady=(6,3))  
         
         # Video frame
-        self.video_frame.pack(fill="x", padx=10, pady=5)
+        self.video_frame.pack(fill="x", padx=8, pady=2)  
         self.video_label.pack(side="left")
         
         # Video progress
-        self.video_progress_frame.pack(side="top", fill="x", pady=(0,5))
-        self.video_progress.pack(side="left", fill="x", expand=True, padx=(0,5))
+        self.video_progress_frame.pack(side="top", fill="x", pady=(0,2))  
+        self.video_progress.pack(side="left", fill="x", expand=True, padx=(0,3))  
         self.video_percent.pack(side="right")
         
         # Video info
@@ -176,12 +200,12 @@ class YouTubeProgressBar(BaseWidget):
         self.video_size.pack(side="right")
         
         # Audio frame
-        self.audio_frame.pack(fill="x", padx=10, pady=5)
+        self.audio_frame.pack(fill="x", padx=8, pady=2)  
         self.audio_label.pack(side="left")
         
         # Audio progress
-        self.audio_progress_frame.pack(side="top", fill="x", pady=(0,5))
-        self.audio_progress.pack(side="left", fill="x", expand=True, padx=(0,5))
+        self.audio_progress_frame.pack(side="top", fill="x", pady=(0,2))  
+        self.audio_progress.pack(side="left", fill="x", expand=True, padx=(0,3))  
         self.audio_percent.pack(side="right")
         
         # Audio info
@@ -190,8 +214,8 @@ class YouTubeProgressBar(BaseWidget):
         self.audio_size.pack(side="right")
         
         # Control frame
-        self.control_frame.pack(fill="x", padx=10, pady=(5,10))
-        self.cancel_button.pack(side="left", padx=5)
+        self.control_frame.pack(fill="x", padx=8, pady=(3,6))  
+        self.cancel_button.pack(side="left", padx=3)  
         self.close_button.pack(side="left")
         
     def update_state(self, state: DownloadState):
@@ -200,61 +224,96 @@ class YouTubeProgressBar(BaseWidget):
         Args:
             state (DownloadState): New download state
         """
-        # Update internal state
-        self.set_state(
+        if state is None:
+            return
+            
+        # Get component from state
+        component = getattr(state, 'component', None)
+        
+        # Update progress based on component
+        progress = getattr(state, 'progress', 0)
+        speed = getattr(state, 'speed', "0 B/s")
+        text = getattr(state, 'text', "")
+        total_size = getattr(state, 'total_size', 0)
+        downloaded_size = getattr(state, 'downloaded_size', 0)
+        
+        # Update progress bar
+        self.update_progress(
+            progress=progress,
+            speed=speed,
+            text=text,
+            total_size=total_size,
+            downloaded_size=downloaded_size,
             state=state.state,
-            video_progress=state.video_progress if hasattr(state, 'video_progress') else 0,
-            audio_progress=state.audio_progress if hasattr(state, 'audio_progress') else 0,
-            video_speed=state.video_speed if hasattr(state, 'video_speed') else "0 B/s",
-            audio_speed=state.audio_speed if hasattr(state, 'audio_speed') else "0 B/s",
-            video_text=state.video_text if hasattr(state, 'video_text') else "",
-            audio_text=state.audio_text if hasattr(state, 'audio_text') else "",
-            video_size=state.video_size if hasattr(state, 'video_size') else 0,
-            audio_size=state.audio_size if hasattr(state, 'audio_size') else 0
+            component=component
         )
         
-        # Update title (show video title)
-        if hasattr(state, 'video_text') and state.video_text:
-            title = state.video_text.replace("Downloading ", "")  # Remove "Downloading " prefix
-            self.title_label.configure(text=title)
+    def update_progress(self, progress: float = None, speed: str = None, text: str = None,
+                       total_size: int = None, downloaded_size: int = None,
+                       stats: Dict = None, state: DownloadState = None,
+                       component: str = None):
+        """Update progress bar state.
         
-        # Update video progress
-        if hasattr(state, 'video_progress'):
-            self.video_progress.set(state.video_progress / 100)
-            self.video_percent.configure(text=f"{state.video_progress:.1f}%")
+        Args:
+            progress (float, optional): Progress percentage (0-100)
+            speed (str, optional): Download speed
+            text (str, optional): Status text
+            total_size (int, optional): Total file size
+            downloaded_size (int, optional): Downloaded file size
+            stats (dict, optional): Download statistics
+            state (DownloadState, optional): Download state
+            component (str, optional): Component being updated (video/audio/muxing)
+        """
+        if state is not None:
+            self.state = state
             
-            # Update video size
-            if state.video_size > 0:
-                downloaded_mb = state.video_downloaded / (1024 * 1024)
-                total_mb = state.video_size / (1024 * 1024)
+        # Handle muxing state
+        if component == "muxing":
+            # Hide audio components
+            self.audio_frame.grid_remove()
+            # Update video components for muxing
+            self.video_label.configure(text="Status:")
+            self.video_progress.configure(progress_color="#2d9d3f")  # Green for muxing
+            if progress is not None:
+                self.video_progress.set(progress / 100)
+                self.video_percent.configure(text=f"{progress:.1f}%")
+            if text is not None:
+                self.video_speed.configure(text=text)
+                self.video_size.configure(text="")  # Clear size during muxing
+            self.title_label.configure(text="Muxing...")
+            self.update_idletasks()  # Force widget update
+            return
+            
+        # Regular video/audio progress updates
+        if component in ["video", None]:
+            # Show video components with original labels
+            self.video_label.configure(text="Video:")
+            self.video_progress.configure(progress_color="#1f538d")  # Blue for download
+            if progress is not None:
+                self.video_progress.set(progress / 100)
+                self.video_percent.configure(text=f"{progress:.1f}%")
+            if speed is not None:
+                self.video_speed.configure(text=speed)
+            if total_size is not None and downloaded_size is not None:
+                total_mb = total_size / (1024 * 1024)
+                downloaded_mb = downloaded_size / (1024 * 1024)
                 self.video_size.configure(text=f"{downloaded_mb:.1f} MB / {total_mb:.1f} MB")
-            
-            # Update video speed
-            self.video_speed.configure(text=state.video_speed)
-            
-        # Update audio progress
-        if hasattr(state, 'audio_progress'):
-            self.audio_progress.set(state.audio_progress / 100)
-            self.audio_percent.configure(text=f"{state.audio_progress:.1f}%")
-            
-            # Update audio size
-            if state.audio_size > 0:
-                downloaded_mb = state.audio_downloaded / (1024 * 1024)
-                total_mb = state.audio_size / (1024 * 1024)
+            self.title_label.configure(text="Downloading YouTube Video...")
+            self.update_idletasks()  # Force widget update
+                
+        if component == "audio":
+            # Show audio components
+            self.audio_frame.grid()
+            if progress is not None:
+                self.audio_progress.set(progress / 100)
+                self.audio_percent.configure(text=f"{progress:.1f}%")
+            if speed is not None:
+                self.audio_speed.configure(text=speed)
+            if total_size is not None and downloaded_size is not None:
+                total_mb = total_size / (1024 * 1024)
+                downloaded_mb = downloaded_size / (1024 * 1024)
                 self.audio_size.configure(text=f"{downloaded_mb:.1f} MB / {total_mb:.1f} MB")
-            
-            # Update audio speed
-            self.audio_speed.configure(text=state.audio_speed)
-        
-        # Update buttons based on state
-        if state.state in [DownloadState.COMPLETED, DownloadState.CANCELLED, DownloadState.ERROR]:
-            self.cancel_button.configure(state="disabled")
-            self.close_button.configure(state="normal")
-            
-        # Handle audio-only downloads
-        if not hasattr(state, 'video_progress') or state.video_progress == 0:
-            self.video_frame.configure(fg_color="gray30")  # Grey out video frame
-            self.video_progress.configure(progress_color="gray50")  # Grey out progress bar
+            self.update_idletasks()  # Force widget update
             
     def _on_cancel_click(self):
         """Handle cancel button click."""

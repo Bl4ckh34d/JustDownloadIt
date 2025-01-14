@@ -32,234 +32,152 @@ import threading
 import re
 import uuid
 from urllib.error import URLError as BuiltinURLError
+import logging
 
 from utils.errors import (
     NetworkError, DownloaderError, URLError, 
     InvalidURLError, UnsupportedURLError, YouTubeError
 )
+from utils.url_utils import check_link_type, clean_url
 from .config import Config
 from .regular_downloader import Downloader
 from .youtube_downloader import YouTubeDownloader
-from .download_state import DownloadState
+from .download_state import DownloadState, DownloadProgress
+
+class DownloadTracker:
+    """Tracks active downloads and their IDs."""
+    
+    def __init__(self):
+        self._url_to_id: Dict[str, str] = {}
+        self._active_downloads: Dict[str, Union[Downloader, YouTubeDownloader]] = {}
+        
+    def add_download(self, url: str, download_id: str, downloader: Union[Downloader, YouTubeDownloader]) -> None:
+        """Add a new download and generate its ID."""
+        self._url_to_id[url] = download_id
+        self._active_downloads[download_id] = downloader
+        
+    def remove_download(self, download_id: str) -> None:
+        """Remove a download from tracking."""
+        if download_id in self._active_downloads:
+            url = next((url for url, id_ in self._url_to_id.items() if id_ == download_id), None)
+            if url:
+                del self._url_to_id[url]
+            del self._active_downloads[download_id]
+            
+    def get_downloader(self, download_id: str) -> Optional[Union[Downloader, YouTubeDownloader]]:
+        """Get downloader instance by ID."""
+        return self._active_downloads.get(download_id)
+        
+    def is_url_active(self, url: str) -> bool:
+        """Check if URL is being downloaded."""
+        return url in self._url_to_id
+        
+    def get_active_downloads(self) -> Set[str]:
+        """Get all active download IDs."""
+        return set(self._active_downloads.keys())
+        
+    def _generate_id(self, url: str) -> str:
+        """Generate unique download ID."""
+        base_id = str(uuid.uuid4())
+        return f"{base_id}_yt" if check_link_type(url) == 'youtube' else base_id
 
 class DownloadManager:
+    """Manages download operations."""
+    
     def __init__(self, download_dir: Optional[Path] = None):
-        """Initialize the download manager
-        
-        Args:
-            download_dir: Directory to save downloads to. If None, uses default downloads directory
-        """
-        # Set download directory
+        """Initialize the download manager."""
         self.download_dir = Config.DOWNLOAD_DIR if download_dir is None else Path(download_dir)
-        
-        # Create downloads directory if it doesn't exist
         self.download_dir.mkdir(parents=True, exist_ok=True)
         
-        self.active_downloads: Dict[str, Union[Downloader, YouTubeDownloader]] = {}
+        self.tracker = DownloadTracker()
         self.download_queue = Queue()
         self.thread_pool = []
         self._stop_flag = False
-        self.progress_callback = None  # Initialize progress callback
-        self._url_to_id_map: Dict[str, str] = {}  # Map URLs to their download IDs
+        self.progress_callback = None
+        self.logger = logging.getLogger(__name__)
         
-    def generate_download_id(self, url: str, is_youtube: bool = False) -> str:
-        """Generate a unique download ID.
-        
-        Args:
-            url: Download URL
-            is_youtube: Whether this is a YouTube download
-            
-        Returns:
-            str: Unique download ID
-        """
-        base_id = str(uuid.uuid4())
-        download_id = f"{base_id}_yt" if is_youtube else base_id
-        self._url_to_id_map[url] = download_id
-        return download_id
-        
-    def get_active_downloads(self) -> Set[str]:
-        """Get set of active download IDs.
-        
-        Returns:
-            Set[str]: Set of active download IDs
-        """
-        return set(self.active_downloads.keys())
-        
-    def is_url_downloading(self, url: str) -> bool:
-        """Check if a URL is currently being downloaded.
-        
-        Args:
-            url: URL to check
-            
-        Returns:
-            bool: True if URL is being downloaded
-        """
-        return url in self._url_to_id_map and self._url_to_id_map[url] in self.active_downloads
-        
-    def get_download_id_for_url(self, url: str) -> Optional[str]:
-        """Get download ID for a URL if it exists.
-        
-        Args:
-            url: URL to get ID for
-            
-        Returns:
-            Optional[str]: Download ID if found, None otherwise
-        """
-        return self._url_to_id_map.get(url)
-
-    def download(self, url: str, download_dir: Optional[Union[str, Path]] = None, 
-                 on_progress: Optional[Callable] = None, threads: int = 4) -> None:
-        """
-        Start a new download.
+    def start_download(self, url: str, **kwargs) -> str:
+        """Start a new download.
         
         Args:
             url (str): URL to download
-            download_dir (Optional[Union[str, Path]]): Directory to save download to. If None, uses default
-            on_progress (Callable, optional): Function to call with progress updates. Defaults to None
-            threads (int, optional): Number of threads to use for download. Defaults to 4
-        
-        Raises:
-            InvalidURLError: If URL is invalid
-            NetworkError: If network error occurs
+            **kwargs: Additional download options
+            
+        Returns:
+            str: Download ID
         """
         try:
-            # Clean URL before creating downloader
-            url = url.strip() if url else ""
-            if not url:
-                raise InvalidURLError("URL cannot be empty")
-                
-            # Create downloader
-            download_id = self.generate_download_id(url)
-            target_dir = Path(download_dir) if download_dir else self.download_dir
-            target_dir.mkdir(parents=True, exist_ok=True)
-            downloader = Downloader(url, target_dir, threads=min(threads, Config.MAX_THREADS))
+            # Generate download ID if not provided
+            download_id = kwargs.pop('download_id', self.generate_download_id(url))
             
-            # Set progress callback if provided
-            if on_progress:
-                self.progress_callback = on_progress  # Store the progress callback
-                downloader.set_progress_callback(self._progress_callback)  # Use our internal callback
-                
-            # Set completion callback
-            downloader.set_completion_callback(self._on_download_complete)
-                
-            # Store download object
-            self.active_downloads[download_id] = downloader
-            
-            # Start download
-            downloader.start()
-            
-        except InvalidURLError as e:
-            raise
-            
-        except UnsupportedURLError as e:
-            raise
-            
-        except BuiltinURLError as e:
-            error_msg = "Invalid URL format"
-            raise InvalidURLError(error_msg)
-            
-        except Exception as e:
-            error_msg = f"Failed to start download: {str(e)}"
-            raise NetworkError(error_msg, url)
-    
-    def download_youtube(self, url: str, download_dir: Optional[Union[str, Path]] = None,
-                        quality: str = None, audio_quality: str = None, 
-                        audio_only: bool = False, on_progress: Optional[Callable] = None,
-                        threads: int = Config.DEFAULT_THREADS) -> None:
-        """
-        Start a YouTube download.
-        
-        Args:
-            url: YouTube URL
-            download_dir: Directory to save download to. If None, uses default
-            quality: Preferred video quality
-            audio_quality: Preferred audio quality
-            audio_only: If True, only download audio
-            on_progress: Function to call with progress updates
-            threads: Number of threads to use for download
-            
-        Raises:
-            InvalidURLError: If URL is invalid
-            YouTubeError: If YouTube download fails
-        """
-        try:
-            # Clean URL before creating downloader
-            url = url.strip() if url else ""
-            if not url:
-                raise InvalidURLError("URL cannot be empty")
-                
-            # Build quality string
-            preferred_quality = f"{quality if not audio_only else '0p'} + {audio_quality}"
-            
-            # Set target directory
-            target_dir = Path(download_dir) if download_dir else self.download_dir
-            target_dir.mkdir(parents=True, exist_ok=True)
-                
-            # Create YouTube downloader
-            download_id = self.generate_download_id(url, is_youtube=True)
-            downloader = YouTubeDownloader(
-                url,
-                str(target_dir),
-                preferred_quality=preferred_quality,
-                threads=threads,
-                audio_only=audio_only
-            )
+            # Get or create downloader
+            downloader = kwargs.pop('downloader', None)
+            if not downloader:
+                # Create regular downloader for non-YouTube URLs
+                downloader = Downloader(
+                    url=url,
+                    download_dir=self.download_dir,
+                    threads=kwargs.pop('threads', Config.DEFAULT_THREADS)
+                )
             
             # Set callbacks
-            if on_progress:
-                downloader.set_progress_callback(on_progress)
-            downloader.set_completion_callback(self._on_download_complete)
+            if 'progress_callback' in kwargs:
+                downloader.set_progress_callback(kwargs['progress_callback'])
             
-            # Store in active downloads
-            self.active_downloads[download_id] = downloader
+            # Store in tracker
+            self.tracker.add_download(url, download_id, downloader)
             
-            # Start download
-            downloader.start()
+            # Start download in a new thread
+            thread = threading.Thread(
+                target=downloader.start,
+                name=f"download-{download_id}"
+            )
+            thread.daemon = True
+            thread.start()
+            self.thread_pool.append(thread)
+            
+            return download_id
             
         except Exception as e:
-            raise YouTubeError(f"Failed to start YouTube download: {e}")
-
-    def cancel_download(self, download_id: str) -> None:
-        """
-        Cancel a download.
+            self.logger.error(f"Error starting download: {e}")
+            raise
         
-        Args:
-            download_id (str): ID of download to cancel
-        """
-        try:
-            downloader = self.active_downloads.get(download_id)
-            if not downloader:
-                return
-                
-            # Cancel the download
+    def cancel_download(self, download_id: str) -> None:
+        """Cancel a download by ID."""
+        downloader = self.tracker.get_downloader(download_id)
+        if downloader:
             downloader.cancel()
+            self.tracker.remove_download(download_id)
             
-            # Remove from active downloads immediately
-            self.active_downloads.pop(download_id, None)
+    def set_progress_callback(self, callback: Callable) -> None:
+        """Set callback for progress updates."""
+        self.progress_callback = callback
+        
+    def _handle_progress(self, download_id: str, progress: DownloadProgress) -> None:
+        """Handle progress updates from downloaders."""
+        if self.progress_callback:
+            self.progress_callback(download_id, progress)
             
-            # Notify UI that download is cancelled
-            if hasattr(downloader, 'progress_callback') and downloader.progress_callback:
-                try:
-                    downloader.progress_callback(download_id, 0, "", "Download cancelled")
-                except Exception as e:
-                    pass
-                
-        except Exception as e:
-            raise DownloaderError(f"Failed to cancel download: {e}")
-
-    def cancel_all(self) -> None:
-        """
-        Cancel all active downloads.
-        """
+    def shutdown(self) -> None:
+        """Shutdown the download manager."""
         self._stop_flag = True
-        active_downloads = list(self.active_downloads.keys())  # Create a copy of keys
-        for download_id in active_downloads:
+        for download_id in self.tracker.get_active_downloads():
             self.cancel_download(download_id)
-        self._stop_flag = False
+            
+    def get_active_downloads(self) -> Set[str]:
+        """Get set of active download IDs."""
+        return self.tracker.get_active_downloads()
+        
+    def is_url_downloading(self, url: str) -> bool:
+        """Check if a URL is currently being downloaded."""
+        return self.tracker.is_url_active(url)
+        
+    def get_download_id_for_url(self, url: str) -> Optional[str]:
+        """Get download ID for a URL if it exists."""
+        return self.tracker._url_to_id.get(url)
 
     def get_download_status(self, download_id: str) -> Optional[Dict]:
-        """
-        Get the status of a download.
+        """Get the status of a download.
         
         Args:
             download_id (str): ID of the download
@@ -273,10 +191,10 @@ class DownloadManager:
                     'error': Optional[str]
                 }
         """
-        if download_id not in self.active_downloads:
+        if download_id not in self.tracker._active_downloads:
             return None
             
-        downloader = self.active_downloads[download_id]
+        downloader = self.tracker._active_downloads[download_id]
         display_name = downloader.url if hasattr(downloader, 'url') else str(download_id)
         
         # Default status
@@ -315,12 +233,12 @@ class DownloadManager:
         # For YouTube downloads, only complete if both video and audio are done
         if "_video" in download_id or "_audio" in download_id:
             base_id = download_id.rsplit('_', 1)[0]
-            if base_id in self.active_downloads:
+            if base_id in self.tracker._active_downloads:
                 # Don't remove until both components are done
                 return
         
         # Get the downloader before removing it
-        downloader = self.active_downloads.get(download_id)
+        downloader = self.tracker._active_downloads.get(download_id)
         if downloader and hasattr(downloader, '_progress_callback') and downloader._progress_callback:
             # Send one final progress update to ensure UI is updated
             downloader._progress_callback(
@@ -335,32 +253,111 @@ class DownloadManager:
             )
                 
         # Remove from active downloads
-        self.active_downloads.pop(download_id, None)
+        self.tracker.remove_download(download_id)
 
-    def _progress_callback(self, download_id: str, progress: float, speed: str = "", 
-                         text: str = "", total_size: float = 0, downloaded_size: float = 0,
-                         stats: dict = None, state: DownloadState = DownloadState.DOWNLOADING) -> None:
+    def _progress_callback(self, download_id: str, progress: float = None, speed: str = None,
+                         text: str = None, total_size: int = None,
+                         downloaded_size: int = None, stats: Dict = None,
+                         state: DownloadState = None, component: str = None,
+                         error: str = None):
+        """Handle progress updates from downloaders."""
+        try:
+            # Update download state
+            if not download_id:
+                return
+                
+            self.logger.info(f"Progress update for {download_id}: {progress:.1f}% ({component})")
+                
+            # Forward progress to GUI callback if set
+            if self.progress_callback:
+                self.progress_callback(
+                    download_id=download_id,
+                    progress=progress,
+                    speed=speed,
+                    text=text,
+                    total_size=total_size,
+                    downloaded_size=downloaded_size,
+                    stats=stats,
+                    state=state,
+                    component=component,
+                    error=error
+                )
+        except Exception as e:
+            self.logger.error(f"Error in progress callback: {e}")
+            
+    def cancel_all(self) -> None:
         """
-        Progress callback for downloads.
+        Cancel all active downloads.
+        """
+        self._stop_flag = True
+        active_downloads = list(self.tracker.get_active_downloads())  # Create a copy of keys
+        for download_id in active_downloads:
+            self.cancel_download(download_id)
+        self._stop_flag = False
+
+    def generate_download_id(self, url: str) -> str:
+        """Generate a unique download ID for a URL.
+        
+        If the URL is already being downloaded, returns its existing ID.
+        Otherwise, generates a new unique ID.
         
         Args:
-            download_id (str): ID of the download
-            progress (float): Download progress percentage (0-100)
-            speed (str, optional): Current download speed. Defaults to "".
-            text (str, optional): Text to display. Defaults to "".
-            total_size (float, optional): Total file size in bytes. Defaults to 0.
-            downloaded_size (float, optional): Downloaded size in bytes. Defaults to 0.
-            stats (dict, optional): Dictionary of download statistics. Defaults to None.
-            state (DownloadState, optional): Current download state. Defaults to DownloadState.DOWNLOADING.
+            url: URL to generate ID for
+            
+        Returns:
+            str: Download ID
         """
-        if self.progress_callback:
-            self.progress_callback(
-                download_id=download_id,
-                progress=progress,
-                speed=speed,
-                text=text,
-                total_size=total_size,
-                downloaded_size=downloaded_size,
-                stats=stats,
-                state=state
+        # Check if URL is already being downloaded
+        existing_id = self.tracker._url_to_id.get(url)
+        if existing_id:
+            return existing_id
+            
+        # Generate new unique ID
+        return str(uuid.uuid4())
+
+    def download_youtube(self, url: str, quality: str = None, audio_quality: str = None,
+                        audio_only: bool = False, threads: int = 4,
+                        progress_callback: Callable = None) -> str:
+        """Download a YouTube video.
+        
+        Args:
+            url (str): YouTube URL
+            quality (str, optional): Video quality. Defaults to None.
+            audio_quality (str, optional): Audio quality. Defaults to None.
+            audio_only (bool, optional): Download audio only. Defaults to False.
+            threads (int, optional): Number of download threads. Defaults to 4.
+            progress_callback (Callable, optional): Progress callback function. Defaults to None.
+            
+        Returns:
+            str: Download ID
+        """
+        try:
+            # Generate download ID
+            download_id = self.generate_download_id(url)
+            
+            # Format preferred quality string
+            quality = quality or "1080p"
+            audio_quality = audio_quality or "160k"
+            preferred_quality = f"{quality} + {audio_quality}"
+            
+            # Create YouTube downloader
+            downloader = YouTubeDownloader(
+                url=url,
+                download_dir=str(self.download_dir),
+                preferred_quality=preferred_quality,
+                threads=threads,
+                audio_only=audio_only
             )
+            
+            # Set callbacks
+            if progress_callback:
+                downloader.set_progress_callback(progress_callback)
+            
+            # Start download
+            self.start_download(url, downloader=downloader)
+            
+            return download_id
+            
+        except Exception as e:
+            self.logger.error(f"Error downloading YouTube video: {e}")
+            raise
