@@ -9,9 +9,9 @@ class Config:
     WINDOW_PADDING = 5
     
     # Download settings
-    DEFAULT_THREADS = 4
+    DEFAULT_THREADS = 8  # Changed from 4 to 8
     MAX_THREADS = 64
-    DEFAULT_RETRY_ATTEMPTS = 3
+    DEFAULT_RETRY_ATTEMPTS = 5  # Changed from 3 to 5
     DOWNLOAD_CHUNK_SIZE = 8192
     WAIT_BETWEEN_RETRIES = 5  # seconds
     

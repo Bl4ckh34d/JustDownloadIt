@@ -1,4 +1,28 @@
-"""YouTube video downloader implementation"""
+"""
+YouTube downloader implementation for JustDownloadIt.
+
+This module provides YouTube-specific download functionality through the YouTubeDownloader class.
+It handles both video and audio downloads with quality selection and format options.
+
+Features:
+    - Video quality selection (up to 4K)
+    - Audio quality selection
+    - Format selection (MP4, WebM)
+    - Automatic stream selection based on quality preferences
+    - Video and audio stream merging
+    - Thumbnail download option
+    - Cookie support for age-restricted videos
+
+Classes:
+    StreamInfo: Container for YouTube stream information
+    YouTubeDownloader: YouTube-specific downloader implementation
+
+Dependencies:
+    - yt-dlp: YouTube download library
+    - ffmpeg: Media processing for stream merging
+    - core.downloader: Base download functionality
+    - core.config: Application configuration
+"""
 
 import os
 import threading
@@ -29,7 +53,12 @@ from .config import Config
 from .downloader import Downloader
 
 def get_youtube_cookies():
-    """Get YouTube cookies from browser"""
+    """
+    Get YouTube cookies from browser.
+    
+    Returns:
+        dict: Cookies for YouTube
+    """
     if not browsercookie:
         DownloaderLogger.get_logger().warning("browser-cookie3 not installed; cannot load YouTube cookies")
         return None
@@ -61,7 +90,20 @@ def get_youtube_cookies():
 
 @dataclass
 class StreamInfo:
-    """Information about a YouTube stream"""
+    """
+    Information about a YouTube stream.
+    
+    Attributes:
+        format_id (str): YouTube format ID
+        ext (str): File extension (e.g., "mp4")
+        height (Optional[int]): Video height
+        fps (Optional[int]): Frames per second
+        vcodec (str): Video codec
+        acodec (str): Audio codec
+        filesize (int): File size in bytes
+        tbr (float): Total bitrate
+        abr (Optional[float]): Audio bitrate
+    """
     format_id: str
     ext: str
     height: Optional[int]
@@ -74,49 +116,81 @@ class StreamInfo:
     
     @property
     def is_video_only(self) -> bool:
+        """
+        Check if this is a video-only stream.
+        
+        Returns:
+            bool: Whether this is a video-only stream
+        """
         return self.vcodec != 'none' and self.acodec == 'none'
     
     @property
     def is_audio_only(self) -> bool:
+        """
+        Check if this is an audio-only stream.
+        
+        Returns:
+            bool: Whether this is an audio-only stream
+        """
         return self.vcodec == 'none' and self.acodec != 'none'
     
     @property
     def is_combined(self) -> bool:
+        """
+        Check if this is a combined video and audio stream.
+        
+        Returns:
+            bool: Whether this is a combined stream
+        """
         return self.vcodec != 'none' and self.acodec != 'none'
 
 class YouTubeDownloader(Downloader):
-    """YouTube video downloader"""
+    """
+    YouTube video downloader.
+    
+    Attributes:
+        url (str): YouTube video URL
+        download_dir (str): Download directory
+        preferred_quality (str): Preferred quality (e.g., "1080p + 160k")
+        threads (int): Number of threads to use
+        audio_only (bool): If True, only download audio
+    """
     
     def __init__(self, url: str, download_dir: str, preferred_quality: str = "1080p + 160k",
-                 threads: int = Config.DEFAULT_THREADS):
-        """Initialize YouTube downloader
+                 threads: int = Config.DEFAULT_THREADS, audio_only: bool = False):
+        """
+        Initialize YouTube downloader.
         
         Args:
             url: YouTube URL
             download_dir: Download directory
             preferred_quality: Preferred quality (e.g., "1080p + 160k")
             threads: Number of threads to use
+            audio_only: If True, only download audio
         """
         super().__init__(url, download_dir, threads)
         self.url = url  # Store as instance variable
         self.download_dir = download_dir  # Store as instance variable
         self.preferred_quality = preferred_quality
+        self.audio_only = audio_only
         self.progress_callback = None
         self._stop_flag = False
         self._lock = threading.Lock()
         self.logger = DownloaderLogger.get_logger()
         self._completion_callback = None
+        self.download_id = str(uuid.uuid4())  # Generate a unique download ID
         
         # Parse quality into video and audio components
         quality_parts = preferred_quality.split(" + ")
         if len(quality_parts) != 2:
             raise YouTubeError(f"Invalid quality format: {preferred_quality}")
             
-        self.video_quality = quality_parts[0]  # e.g., "1080p"
+        self.video_quality = quality_parts[0] if not audio_only else None  # e.g., "1080p"
         self.audio_quality = quality_parts[1]  # e.g., "160k"
 
     def set_progress_callback(self, callback: Callable) -> None:
-        """Set progress callback function
+        """
+        Set progress callback function.
         
         Args:
             callback: Function to call with progress updates
@@ -125,7 +199,8 @@ class YouTubeDownloader(Downloader):
         self.logger.debug(f"Progress callback set: {callback}")
         
     def set_completion_callback(self, callback: Callable) -> None:
-        """Set completion callback function
+        """
+        Set completion callback function.
         
         Args:
             callback: Function to call when download is complete
@@ -133,267 +208,392 @@ class YouTubeDownloader(Downloader):
         self._completion_callback = callback
         self.logger.debug(f"Completion callback set: {callback}")
         
-    def _extract_formats(self, url: str) -> tuple:
-        """Extract available formats for video
+    def _extract_formats(self, url: str) -> tuple[Optional[dict], Optional[dict]]:
+        """
+        Extract video and audio formats from YouTube URL.
         
         Args:
-            url: Video URL
+            url (str): YouTube video URL
             
         Returns:
-            Tuple of (video_format, audio_format)
+            tuple[Optional[dict], Optional[dict]]: Selected video and audio formats
+            
+        Raises:
+            YouTubeError: If format extraction fails
         """
-        # Configure yt-dlp options
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,  # Changed to False to get full format info
-            'format': 'best',  # Default format to ensure we can extract info
-            'cookiesfrombrowser': ('firefox',),
-        }
-        
         try:
-            # Extract video info
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                formats = info['formats']
+            # Extract available formats
+            ydl = yt_dlp.YoutubeDL({'quiet': True})
+            info = ydl.extract_info(url, download=False)
+            formats = info.get('formats', [])
+            
+            # Filter formats
+            video_formats = []
+            audio_formats = []
+            
+            for f in formats:
+                if f.get('vcodec') != 'none' and f.get('acodec') == 'none':
+                    video_formats.append(f)
+                elif f.get('acodec') != 'none' and f.get('vcodec') == 'none':
+                    audio_formats.append(f)
+                    
+            if not video_formats and not audio_formats:
+                raise YouTubeError("No suitable formats found")
                 
-                # Log available formats for debugging
-                self.logger.debug("Available formats:")
-                for fmt in formats:
-                    self.logger.debug(f"Format {fmt.get('format_id')}: {fmt.get('height')}p - {fmt.get('vcodec')}/{fmt.get('acodec')}")
+            # Sort formats by quality
+            video_formats.sort(key=lambda x: (x.get('height', 0) or 0, x.get('filesize', 0) or 0), reverse=True)
+            audio_formats.sort(key=lambda x: (x.get('abr', 0) or 0, x.get('filesize', 0) or 0), reverse=True)
+            
+            # Handle audio-only downloads
+            if self.audio_only:
+                return None, self._select_audio_format(audio_formats)
                 
-                # Get video-only formats
-                video_formats = [f for f in formats 
-                               if f.get('vcodec', 'none') != 'none' 
-                               and f.get('acodec', 'none') == 'none'
-                               and f.get('height') is not None]
-                
-                # Get audio-only formats
-                audio_formats = [f for f in formats
-                               if f.get('acodec', 'none') != 'none'
-                               and f.get('vcodec', 'none') == 'none']
-                
-                if not video_formats:
-                    raise YouTubeError("No video-only formats found")
-                if not audio_formats:
-                    raise YouTubeError("No audio-only formats found")
-                
-                # Sort video formats by height
-                video_formats.sort(key=lambda x: x.get('height', 0), reverse=True)
-                
-                # Find best video format close to preferred height
-                preferred_height = int(self.video_quality.replace('p', ''))
-                best_video = None
+            # Select video format based on quality preference
+            video_format = None
+            if self.video_quality is None or self.video_quality.lower() == 'highest':
+                # Choose highest quality available
+                video_format = video_formats[0] if video_formats else None
+            else:
+                # Try to match requested quality
+                target_height = int(self.video_quality.rstrip('p'))
+                # Find the closest match that doesn't exceed target
+                closest_format = None
+                min_diff = float('inf')
                 for fmt in video_formats:
-                    height = fmt.get('height', 0)
-                    if height >= preferred_height * 0.8:  # Accept 80% of preferred height
-                        best_video = fmt
-                        break
+                    height = fmt.get('height', 0) or 0
+                    if height <= target_height:
+                        diff = target_height - height
+                        if diff < min_diff:
+                            min_diff = diff
+                            closest_format = fmt
+                video_format = closest_format or video_formats[-1]  # Use lowest if no match found
                 
-                # If no format found above threshold, take highest available
-                if not best_video:
-                    best_video = video_formats[0]
+            # Select audio format
+            audio_format = self._select_audio_format(audio_formats)
                 
-                # Sort audio formats by bitrate
-                audio_formats.sort(key=lambda x: float(x.get('abr', 0)), reverse=True)
-                
-                # Prefer m4a audio format if available
-                best_audio = None
-                for fmt in audio_formats:
-                    if fmt.get('ext', '') == 'm4a':
-                        best_audio = fmt
-                        break
-                
-                # If no m4a found, take highest bitrate
-                if not best_audio:
-                    best_audio = audio_formats[0]
-                
-                self.logger.info(f"Selected video format: {best_video['format_id']} ({best_video.get('height', 0)}p)")
-                self.logger.info(f"Selected audio format: {best_audio['format_id']} ({best_audio.get('abr', 0)}k)")
-                
-                return best_video, best_audio
-                
+            return video_format, audio_format
+            
         except Exception as e:
             raise YouTubeError(f"Failed to extract video formats: {str(e)}")
 
-    def _download_video(self, video_format: dict, audio_format: dict = None, output_path: str = None, video_path: str = None, audio_path: str = None) -> None:
-        """Download video and optionally audio streams"""
+    def _select_audio_format(self, audio_formats: list) -> Optional[dict]:
+        """
+        Select the best audio format from available formats.
+        
+        Args:
+            audio_formats (list): List of available audio formats
+            
+        Returns:
+            Optional[dict]: Selected audio format or None if no suitable format found
+        """
+        if not audio_formats:
+            return None
+            
+        # Prefer m4a format with highest bitrate
+        m4a_formats = [f for f in audio_formats if f.get('ext') == 'm4a']
+        if m4a_formats:
+            return m4a_formats[0]  # Already sorted by bitrate
+            
+        # Otherwise use highest bitrate format
+        return audio_formats[0]
+
+    def _download(self, url: str, destination: str):
+        """
+        Download YouTube video.
+        
+        Args:
+            url: YouTube URL
+            destination: Download destination directory
+        """
         try:
-            # Create temporary paths if not provided
-            if not video_path:
-                video_path = f"{output_path}.video.mp4"
-            if audio_format and not audio_path:
-                audio_path = f"{output_path}.audio.m4a"
+            # Extract available formats
+            video_format, audio_format = self._extract_formats(url)
             
-            # Track completion
-            video_complete = False
-            audio_complete = False
-            download_lock = threading.Lock()
+            # Generate unique output paths
+            base_name = str(uuid.uuid4())
+            output_path = os.path.join(destination, f"{base_name}_final.mp4")
+            video_path = os.path.join(destination, f"{base_name}_video.mp4") if not self.audio_only else None
+            audio_path = os.path.join(destination, f"{base_name}_audio.m4a")
             
-            # Base options for both video and audio
-            base_opts = {
-                'retries': 10,
-                'fragment_retries': 10,
-                'retry_sleep_functions': {'http': lambda n: 5},
-                'ignoreerrors': False,
+            # Download streams
+            if self.audio_only:
+                # Audio only - download and convert directly
+                self._download_video(
+                    video_format=None,
+                    audio_format=audio_format,
+                    output_path=output_path,
+                    audio_path=audio_path
+                )
+            else:
+                # Video + Audio - download both and mux
+                self._download_video(
+                    video_format=video_format,
+                    audio_format=audio_format,
+                    output_path=output_path,
+                    video_path=video_path,
+                    audio_path=audio_path
+                )
+                
+        except Exception as e:
+            self.logger.error(f"Error downloading YouTube video: {e}")
+            raise YouTubeError(f"Failed to download video: {e}")
+
+    def _download_video(self, video_format: dict, audio_format: dict = None, output_path: str = None,
+                       video_path: str = None, audio_path: str = None):
+        """
+        Download video and optionally audio streams.
+        
+        Args:
+            video_format: Video format dictionary
+            audio_format: Audio format dictionary (optional)
+            output_path: Output path for combined video (optional)
+            video_path: Output path for video stream (optional)
+            audio_path: Output path for audio stream (optional)
+        """
+        try:
+            # Download video and audio streams
+            self.download_stream(video_format, video_path)
+            if audio_format:
+                self.download_stream(audio_format, audio_path, is_audio=True)
+
+            # Check if both files exist before merging
+            if not os.path.exists(video_path):
+                raise YouTubeError(f"Video file not found: {video_path}")
+            if audio_format and not os.path.exists(audio_path):
+                raise YouTubeError(f"Audio file not found: {audio_path}")
+
+            # Merge video and audio if needed
+            if audio_format:
+                # Ensure output directory exists
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                
+                # Run FFmpeg command
+                try:
+                    subprocess.run([
+                        'ffmpeg', '-y',
+                        '-i', video_path,
+                        '-i', audio_path,
+                        '-c', 'copy',
+                        output_path
+                    ], check=True, capture_output=True, text=True)
+                except subprocess.CalledProcessError as e:
+                    raise YouTubeError(f"FFmpeg error: {e.stderr or str(e)}")
+                    
+                # Clean up temporary files
+                try:
+                    os.remove(video_path)
+                    os.remove(audio_path)
+                except OSError as e:
+                    self.logger.warning(f"Failed to clean up temporary files: {e}")
+            else:
+                # Just rename video file to final output
+                os.rename(video_path, output_path)
+                
+        except Exception as e:
+            raise YouTubeError(f"FFmpeg error: {e}")
+
+    def download_stream(self, format_info: dict, output_path: str, is_audio: bool = False) -> None:
+        """
+        Download a single stream (video or audio).
+        
+        Args:
+            format_info: Format information dictionary from yt-dlp
+            output_path: Path to save the stream
+            is_audio: Whether this is an audio stream
+        """
+        try:
+            self.logger.debug(f"Starting download of {'audio' if is_audio else 'video'} stream to {output_path}")
+            
+            # Store download progress state
+            self._current_progress = {
+                'downloaded': 0,
+                'total': format_info.get('filesize', 0),
+                'speed': 0,
+                'status': 'downloading'
+            }
+
+            def progress_hook(d):
+                self.logger.debug(f"Progress hook called with status: {d['status']}")
+                # Update current progress with safe float conversion
+                speed = d.get('speed')
+                if speed is not None:
+                    try:
+                        speed = float(speed)
+                    except (ValueError, TypeError):
+                        speed = 0
+                else:
+                    speed = 0
+                    
+                downloaded = d.get('downloaded_bytes', 0)
+                if downloaded is not None:
+                    try:
+                        downloaded = float(downloaded)
+                    except (ValueError, TypeError):
+                        downloaded = 0
+                        
+                total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+                if total is not None:
+                    try:
+                        total = float(total)
+                    except (ValueError, TypeError):
+                        total = 0
+
+                self._current_progress.update({
+                    'downloaded': downloaded,
+                    'total': total,
+                    'speed': speed,
+                    'status': d['status']
+                })
+                self.logger.debug(f"Updated progress state: {self._current_progress}")
+                # Call the actual progress hook
+                self._format_progress_hook(d, self.download_id, is_audio, format_info.get('filesize', 0))
+
+            ydl_opts = {
+                'format': format_info['format_id'],
+                'outtmpl': output_path,
                 'quiet': True,
                 'no_warnings': True,
-                'cookiesfrombrowser': ('firefox',),
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                }
+                'progress_hooks': [progress_hook]
             }
             
-            # Function to check completion and call callback
-            def check_completion():
-                nonlocal video_complete, audio_complete
-                with download_lock:
-                    if (video_complete and audio_complete) or (video_complete and not audio_format):
-                        if self._completion_callback:
-                            self._completion_callback(self.url)
+            # Start download in a separate thread
+            download_thread = threading.Thread(target=lambda: yt_dlp.YoutubeDL(ydl_opts).download([self.url]))
+            download_thread.start()
             
-            # Function to download a format
-            def download_stream(format_dict, output_file, is_audio=False):
-                opts = base_opts.copy()
-                opts.update({
-                    'format': format_dict['format_id'],
-                    'outtmpl': {'default': output_file},
-                    'progress_hooks': [lambda d: self._format_progress_hook(
-                        d, 
-                        f"{self.url}_{'audio' if is_audio else 'video'}", 
-                        is_audio,
-                        format_dict.get('filesize', 0)
-                    )],
-                    'extract_flat': True  # Avoid re-extracting format info
-                })
-                
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    try:
-                        ydl.download([self.url])
-                        nonlocal video_complete, audio_complete
-                        with download_lock:
-                            if is_audio:
-                                audio_complete = True
-                            else:
-                                video_complete = True
-                        # Check completion after updating status
-                        check_completion()
-                    except Exception as e:
-                        self.logger.error(f"Error downloading {'audio' if is_audio else 'video'}: {str(e)}")
-                        raise
-            
-            # Start video download thread
-            self.logger.info("Starting video download...")
-            video_thread = threading.Thread(
-                target=download_stream, 
-                args=(video_format, video_path, False)
-            )
-            video_thread.start()
-            
-            # Start audio download thread if needed
-            audio_thread = None
-            if audio_format:
-                audio_thread = threading.Thread(
-                    target=download_stream, 
-                    args=(audio_format, audio_path, True)
-                )
-                audio_thread.start()
-            
-            # Wait for downloads to complete
-            video_thread.join()
-            if audio_thread:
-                audio_thread.join()
-            
-            # Merge if both video and audio were downloaded
-            if audio_format:
-                self.logger.info("Merging video and audio...")
-                if os.path.exists(video_path) and os.path.exists(audio_path):
-                    merge_opts = base_opts.copy()
-                    merge_opts.update({
-                        'format': 'merged',
-                        'outtmpl': {'default': output_path},
-                        'merge_output_format': 'mp4'
-                    })
+            # Monitor progress in main thread
+            while download_thread.is_alive() and not self._stop_flag:
+                if self._current_progress['status'] == 'downloading':
+                    downloaded = self._current_progress['downloaded']
+                    total = self._current_progress['total']
+                    speed = self._current_progress['speed']
                     
-                    with yt_dlp.YoutubeDL(merge_opts) as ydl:
-                        ydl.download(['-'])
+                    if total and downloaded:
+                        progress = (downloaded / total) * 100
+                        speed_str = f"{self._format_size(speed)}/s" if speed else ""
+                        text = f"Downloading {self._format_size(downloaded)}/{self._format_size(total)}"
                         
-                    # Clean up temporary files
-                    try:
-                        os.remove(video_path)
-                        os.remove(audio_path)
-                    except Exception as e:
-                        self.logger.warning(f"Failed to clean up temporary files: {e}")
-                else:
-                    raise YouTubeError("Video or audio file missing after download")
-            
-            # Only call completion callback when both components are done
-            if self._completion_callback and (video_complete and (not audio_format or audio_complete)):
-                self._completion_callback(self.url)
+                        self.logger.debug(f"Progress update: {progress:.1f}% at {speed_str}")
+                        
+                        if self.progress_callback:
+                            self.logger.debug(f"Calling progress callback with download_id: {self.download_id}")
+                            self.progress_callback(
+                                self.download_id,
+                                progress,
+                                DownloadState.DOWNLOADING,
+                                speed_str,
+                                text,
+                                total,
+                                downloaded,
+                                stats={
+                                    'peak_speed': speed,
+                                    'avg_speed': speed,
+                                    'total_time': 0,
+                                    'timestamps': [],
+                                    'speeds': []
+                                },
+                                component="audio" if self.audio_only or is_audio else "video"
+                            )
                 
-            self.logger.info("Download completed successfully")
-                    
+                time.sleep(0.1)  # Brief sleep to prevent high CPU usage
+                
+            # Wait for download thread to finish
+            download_thread.join()
+            self.logger.debug(f"Download thread finished for {'audio' if is_audio else 'video'} stream")
+                
         except Exception as e:
-            self.logger.error(f"Failed to download video: {str(e)}")
-            raise YouTubeError(f"Failed to download video: {str(e)}")
+            self.logger.error(f"Error in download_stream: {e}")
+            raise YouTubeError(f"Error downloading stream: {e}")
+
+    def _format_progress_hook(self, d: dict, id_: str, is_audio: bool = False, format_size: int = 0) -> None:
+        """
+        Format the progress hook data for the progress callback.
+        
+        Args:
+            d: Progress hook data
+            id_: Download ID
+            is_audio: Whether this is an audio stream (optional)
+            format_size: Total size of the format (optional)
+        """
+        if not self.progress_callback:
+            return
+            
+        try:
+            status = d['status']
+            
+            if status == 'downloading':
+                downloaded = d.get('downloaded_bytes', 0)
+                total = d.get('total_bytes') or d.get('total_bytes_estimate', format_size)
+                speed = d.get('speed', 0)
+                
+                if total:
+                    progress = (downloaded / total) * 100
+                else:
+                    progress = 0
+                    
+                speed_str = f"{self._format_size(speed)}/s" if speed else ""
+                text = f"Downloading {self._format_size(downloaded)}/{self._format_size(total)}"
+                
+                self.progress_callback(
+                    self.download_id,
+                    progress,
+                    DownloadState.DOWNLOADING,
+                    speed_str,
+                    text,
+                    total,
+                    downloaded,
+                    stats={
+                        'peak_speed': speed,
+                        'avg_speed': speed,
+                        'total_time': 0,
+                        'timestamps': [],
+                        'speeds': []
+                    },
+                    component="audio" if self.audio_only or is_audio else "video"
+                )
+                
+            elif status == 'finished':
+                self.progress_callback(
+                    self.download_id,
+                    100.0,
+                    DownloadState.FINISHED,
+                    "",
+                    "Download complete",
+                    format_size,
+                    format_size,
+                    stats=None,
+                    component="audio" if self.audio_only or is_audio else "video"
+                )
+                
+        except Exception as e:
+            self.logger.error(f"Error in progress hook: {e}")
 
     def _format_size(self, size: float) -> str:
-        """Format size in bytes to human readable string"""
+        """
+        Format size in bytes to human readable string.
+        
+        Args:
+            size: Size in bytes
+        
+        Returns:
+            str: Formatted size string (e.g., "1.5 GB")
+        """
         for unit in ['B', 'KB', 'MB', 'GB']:
             if size < 1024:
                 return f"{size:.1f}{unit}"
             size /= 1024
         return f"{size:.1f}TB"
 
-    def _format_progress_hook(self, d: dict, id_: str, is_audio: bool = False, format_size: int = 0) -> None:
-        """Format the progress hook data for the progress callback"""
-        try:
-            if d['status'] == 'downloading':
-                total = float(d.get('total_bytes', 0)) or float(d.get('total_bytes_estimate', 0))
-                downloaded = float(d.get('downloaded_bytes', 0))
-                speed = float(d.get('speed', 0))
-                
-                if total and downloaded:
-                    progress = (downloaded / total) * 100
-                    speed_str = f"{self._format_size(speed)}/s" if speed else ""
-                    text = f"Downloading {self._format_size(downloaded)}/{self._format_size(total)}"
-                    
-                    if self.progress_callback:
-                        self.progress_callback(
-                            id_,
-                            progress,
-                            speed_str,
-                            text,
-                            total,
-                            downloaded,
-                            is_youtube=True,
-                            is_audio=is_audio
-                        )
-                        
-            elif d['status'] == 'finished':
-                # Send 100% progress
-                if self.progress_callback:
-                    self.progress_callback(
-                        id_,
-                        100.0,
-                        "",
-                        "Download complete",
-                        format_size,
-                        format_size,
-                        is_youtube=True,
-                        is_audio=is_audio
-                    )
-                
-        except Exception as e:
-            self.logger.error(f"Error in progress hook: {str(e)}")
-
     def cancel(self):
-        """Cancel the download"""
+        """
+        Cancel the download.
+        """
         with self._lock:
             self._stop_flag = True
 
     def start(self) -> None:
-        """Start the download"""
+        """
+        Start the download.
+        """
         try:
             if not yt_dlp:
                 raise YouTubeError("yt-dlp not installed")
@@ -408,68 +608,3 @@ class YouTubeDownloader(Downloader):
             
         except Exception as e:
             raise YouTubeError(f"Failed to start download: {str(e)}")
-
-    def _download(self, url: str, destination: str) -> None:
-        """Download YouTube video
-        
-        Args:
-            url: YouTube URL
-            destination: Download destination directory
-        """
-        try:
-            # Get cookies
-            cookies = get_youtube_cookies()
-            
-            # Extract video info
-            video_format, audio_format = self._extract_formats(url)
-            
-            self.logger.info(f"Selected video format: {video_format.get('format_id')} ({video_format.get('height', 0)}p)")
-            self.logger.info(f"Selected audio format: {audio_format.get('format_id')} ({audio_format.get('abr', 0)}k)")
-            
-            # Create unique temporary filenames
-            with tempfile.TemporaryDirectory() as temp_dir:
-                video_path = os.path.join(temp_dir, "video")
-                audio_path = os.path.join(temp_dir, "audio") if audio_format else None
-                
-                # Get sanitized output filename
-                output_filename = sanitize_filename(video_format.get('title', 'Unknown Title'))
-                if not output_filename:
-                    output_filename = 'video'
-                output_path = os.path.join(destination, f"{output_filename}.mp4")
-                
-                self._download_video(video_format, audio_format, output_path, video_path, audio_path)
-                
-                # Call completion callback if set
-                if self._completion_callback:
-                    self._completion_callback(self.url)
-                
-        except Exception as e:
-            self.logger.error(f"YouTube download failed: {e}", exc_info=True)
-            # Log error and notify progress callback
-            self.logger.error(f"YouTube download failed: {str(e)}")
-            
-            if self.progress_callback:
-                self.progress_callback(
-                    download_id=f"{self.url}_video",
-                    progress=0,
-                    speed="",
-                    text=f"Error: {str(e)}",
-                    total_size=0,
-                    downloaded_size=0,
-                    is_youtube=True,
-                    is_audio=False
-                )
-                
-                if audio_format:
-                    self.progress_callback(
-                        download_id=f"{self.url}_audio",
-                        progress=0,
-                        speed="",
-                        text=f"Error: {str(e)}",
-                        total_size=0,
-                        downloaded_size=0,
-                        is_youtube=True,
-                        is_audio=True
-                    )
-                    
-            raise YouTubeError(f"Download failed: {str(e)}")

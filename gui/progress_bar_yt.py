@@ -1,144 +1,364 @@
 import tkinter as tk
 import customtkinter as ctk
 import os
+import subprocess
 from tkinter import messagebox
 from typing import Callable
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from core.download_state import DownloadState
 
 class YouTubeProgressBar(ctk.CTkFrame):
-    """A custom progress bar widget for YouTube downloads with two stacked progress bars"""
+    """Custom progress bar for YouTube downloads"""
     
-    def __init__(self, master, download_id: str, text: str = "", cancel_callback: Callable = None):
-        """Initialize progress bar frame"""
-        super().__init__(master)
+    def __init__(self, master, download_id=None, cancel_callback=None, audio_only=False, **kwargs):
+        super().__init__(master=master, **kwargs)
         
         self.download_id = download_id
         self.cancel_callback = cancel_callback
         self.video_progress = 0
         self.audio_progress = 0
-        self.video_size = 0
-        self.audio_size = 0
-        self.filepath = None  # Store filepath for opening later
+        self.combined_progress = 0
+        self.expanded = False
+        self.video_filepath = None
+        self.audio_filepath = None
+        self.audio_only = audio_only
         
-        # Create main content frame
-        self.content = ctk.CTkFrame(self)
-        self.content.pack(fill=tk.X, expand=True, padx=5, pady=2)
+        # Configure grid weights for proper expansion
+        self.grid_columnconfigure(0, weight=1)
         
-        # Create top row with title and close button
-        self.top_row = ctk.CTkFrame(self.content)
-        self.top_row.pack(fill=tk.X, padx=5, pady=(2,0))
+        # Main container (for animation)
+        self.container = ctk.CTkFrame(self)
+        self.container.grid(row=0, column=0, sticky="nsew")
+        self.container.grid_columnconfigure(0, weight=1)
+        self.container.grid_rowconfigure(1, weight=1)  # For detail frame expansion
         
-        # Title label (left-aligned)
-        self.title_label = ctk.CTkLabel(self.top_row, text=text)
-        self.title_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Basic info frame
+        self.basic_frame = ctk.CTkFrame(self.container)
+        self.basic_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self.basic_frame.grid_columnconfigure(1, weight=1)
         
-        # Close button (right-aligned, small red X)
-        self.close_button = ctk.CTkButton(self.top_row, text="×", width=20, height=20, 
-                                        fg_color="red", hover_color="darkred",
-                                        command=self._on_close)
-        self.close_button.pack(side=tk.RIGHT, padx=(5,0))
+        # Title label
+        self.title_label = ctk.CTkLabel(
+            self.basic_frame, text="", anchor="w"
+        )
+        self.title_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=5)
         
-        # Video section
-        self.video_frame = ctk.CTkFrame(self.content)
-        self.video_frame.pack(fill=tk.X, padx=5, pady=(0,2))
+        # Cancel/Open button
+        self.action_button = ctk.CTkButton(
+            self.basic_frame, text="Cancel", width=60, height=25,
+            command=self._on_cancel
+        )
+        self.action_button.grid(row=0, column=3, padx=5, pady=5)
         
-        self.video_label = ctk.CTkLabel(self.video_frame, text="Video")
-        self.video_label.pack(side=tk.LEFT)
+        # Close button (X)
+        self.close_button = ctk.CTkButton(
+            self.basic_frame, text="×", width=25, height=25,
+            command=self._on_close,
+            fg_color="red", hover_color="darkred"
+        )
+        self.close_button.grid(row=0, column=4, padx=(0, 5), pady=5)
         
-        self.video_bar = ctk.CTkProgressBar(self.video_frame)
-        self.video_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        self.video_bar.set(0)
+        if not audio_only:
+            # Video progress
+            self.video_label = ctk.CTkLabel(
+                self.basic_frame, text="Video:", anchor="w"
+            )
+            self.video_label.grid(row=1, column=0, sticky="w", padx=5)
+            
+            self.video_progress_bar = ctk.CTkProgressBar(self.basic_frame)
+            self.video_progress_bar.grid(row=1, column=1, columnspan=3, sticky="ew", padx=5)
+            self.video_progress_bar.set(0)
+            
+            self.video_status = ctk.CTkLabel(
+                self.basic_frame, text="0%", anchor="w"
+            )
+            self.video_status.grid(row=1, column=4, sticky="w", padx=5)
         
-        self.video_speed = ctk.CTkLabel(self.video_frame, text="0 MB/s")
-        self.video_speed.pack(side=tk.LEFT, padx=5)
+        # Audio progress
+        audio_row = 2 if not audio_only else 1
+        self.audio_label = ctk.CTkLabel(
+            self.basic_frame, text="Audio:" if not audio_only else "Progress:", anchor="w"
+        )
+        self.audio_label.grid(row=audio_row, column=0, sticky="w", padx=5)
         
-        self.video_cancel = ctk.CTkButton(self.video_frame, text="Cancel", 
-                                        command=lambda: self._on_cancel('video'),
-                                        width=60, height=25)  # Reduced size
-        self.video_cancel.pack(side=tk.LEFT, padx=5)
+        self.audio_progress_bar = ctk.CTkProgressBar(self.basic_frame)
+        self.audio_progress_bar.grid(row=audio_row, column=1, columnspan=3, sticky="ew", padx=5)
+        self.audio_progress_bar.set(0)
         
-        # Audio section
-        self.audio_frame = ctk.CTkFrame(self.content)
-        self.audio_frame.pack(fill=tk.X, padx=5, pady=(0,2))
+        self.audio_status = ctk.CTkLabel(
+            self.basic_frame, text="0%", anchor="w"
+        )
+        self.audio_status.grid(row=audio_row, column=4, sticky="w", padx=5)
         
-        self.audio_label = ctk.CTkLabel(self.audio_frame, text="Audio")
-        self.audio_label.pack(side=tk.LEFT)
+        # Make all frames and widgets clickable
+        for widget in [self, self.container, self.basic_frame, self.title_label,
+                      self.video_label if not audio_only else None, self.audio_label,
+                      self.video_status if not audio_only else None, self.audio_status]:
+            if widget:  # Check for None
+                widget.bind("<ButtonRelease-1>", self._toggle_expansion)
+                # For Windows, also bind to Button-1
+                widget.bind("<Button-1>", lambda e: "break")
+            
+        # Special handling for buttons to prevent expansion
+        for button in [self.close_button, self.action_button]:
+            button.bind("<Button-1>", lambda e: "break")  # Prevent event propagation
+            button.bind("<ButtonRelease-1>", lambda e: "break")
+            
+        # Detailed info frame (hidden by default)
+        self.detail_frame = ctk.CTkFrame(self.container)
+        self.container.grid_rowconfigure(1, weight=1)  # Give row 1 weight for expansion
         
-        self.audio_bar = ctk.CTkProgressBar(self.audio_frame)
-        self.audio_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        self.audio_bar.set(0)
+        # Import matplotlib and configure it for CTk
+        plt.style.use('dark_background')
         
-        self.audio_speed = ctk.CTkLabel(self.audio_frame, text="0 MB/s")
-        self.audio_speed.pack(side=tk.LEFT, padx=5)
+        # Initialize figure variables
+        self.fig = None
+        self.ax1 = None
+        self.ax2 = None
+        self.canvas = None
         
-        self.audio_cancel = ctk.CTkButton(self.audio_frame, text="Cancel", 
-                                        command=lambda: self._on_cancel('audio'),
-                                        width=60, height=25)  # Reduced size
-        self.audio_cancel.pack(side=tk.LEFT, padx=5)
+        # Stats labels
+        self.stats_frame = ctk.CTkFrame(self.detail_frame)
+        self.stats_frame.pack(fill="x", padx=5, pady=5)
         
-    def set_cancel_callback(self, callback):
-        """Set callback for cancel button"""
-        self.cancel_callback = callback
+        # Video stats
+        if not audio_only:
+            self.video_stats_frame = ctk.CTkFrame(self.stats_frame)
+            self.video_stats_frame.pack(fill="x", padx=5, pady=2)
+            
+            ctk.CTkLabel(self.video_stats_frame, text="Video:").pack(side="left", padx=5)
+            self.video_peak_speed = ctk.CTkLabel(self.video_stats_frame, text="Peak: -")
+            self.video_peak_speed.pack(side="left", padx=5)
+            self.video_avg_speed = ctk.CTkLabel(self.video_stats_frame, text="Avg: -")
+            self.video_avg_speed.pack(side="left", padx=5)
+            self.video_time = ctk.CTkLabel(self.video_stats_frame, text="Time: -")
+            self.video_time.pack(side="left", padx=5)
         
-    def destroy(self):
-        """Override destroy to prevent premature removal"""
-        if self.video_progress < 100 or self.audio_progress < 100:
-            if self.cancel_callback:
-                self.cancel_callback(self.download_id)
-        super().destroy()
+        # Audio stats
+        self.audio_stats_frame = ctk.CTkFrame(self.stats_frame)
+        self.audio_stats_frame.pack(fill="x", padx=5, pady=2)
         
-    def update(self, progress: float, speed: str = "", text: str = "", 
-               total_size: float = 0, downloaded_size: float = 0):
-        """Override parent update to prevent auto-removal
+        ctk.CTkLabel(self.audio_stats_frame, text="Audio:").pack(side="left", padx=5)
+        self.audio_peak_speed = ctk.CTkLabel(self.audio_stats_frame, text="Peak: -")
+        self.audio_peak_speed.pack(side="left", padx=5)
+        self.audio_avg_speed = ctk.CTkLabel(self.audio_stats_frame, text="Avg: -")
+        self.audio_avg_speed.pack(side="left", padx=5)
+        self.audio_time = ctk.CTkLabel(self.audio_stats_frame, text="Time: -")
+        self.audio_time.pack(side="left", padx=5)
         
-        This method is called by the parent class's update mechanism.
-        We override it to do nothing since we handle updates through update_progress.
-        """
-        pass
-
-    def update_progress(self, component: str, progress: float, speed: str = "", 
-                       text: str = "", total_size: float = 0, downloaded_size: float = 0,
-                       format_size: float = 0):
-        """Update progress for video or audio component"""
+        # Configure grid
+        self.grid_columnconfigure(0, weight=1)
+        self.container.grid_columnconfigure(0, weight=1)
+        self.basic_frame.grid_columnconfigure(2, weight=1)
+        
+        # Store download statistics
+        self.video_stats = None
+        self.audio_stats = None
+        
+        # Add hover effect
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.configure(border_width=1, border_color=self.cget("fg_color"))
+        
+    def _toggle_expansion(self, event=None):
+        """Toggle the expansion of the progress bar to show/hide details"""
+        print(f"YouTube progress bar toggle expansion called. Current state: {self.expanded}")
+        self.expanded = not self.expanded
+        print(f"New state: {self.expanded}")
+        
+        if self.expanded:
+            # Create matplotlib figure if not exists
+            if self.fig is None:
+                self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(6, 4))
+                self.canvas = FigureCanvasTkAgg(self.fig, master=self.detail_frame)
+                self.canvas.get_tk_widget().pack(fill="both", expand=True)
+            
+            # Show detail frame
+            self.detail_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        else:
+            # Hide detail frame
+            self.detail_frame.grid_forget()
+            
+    def _update_graphs(self):
+        """Update both video and audio graphs"""
         try:
-            # If text indicates completion, ensure progress is 100%
-            if text and "(Complete)" in text:
-                progress = 100.0
-                # Store filepath from the text
-                if text and "Saved to:" in text:
-                    self.filepath = text.split("Saved to:", 1)[1].strip()
-                # Change cancel button to open
-                if component == 'video':
-                    self.video_cancel.configure(text="Open", command=lambda: self._on_open(self.filepath))
+            if not self.expanded or not self.fig:
+                return
+
+            self.ax1.clear()
+            self.ax2.clear()
+
+            # Plot video speed if not audio only
+            if not self.audio_only and self.video_stats and 'timestamps' in self.video_stats and 'speeds' in self.video_stats:
+                speeds_mb = [s / (1024 * 1024) for s in self.video_stats['speeds']]
+                self.ax1.plot(self.video_stats['timestamps'], speeds_mb, 'b-', label='Video Speed (MB/s)')
+                self.ax1.set_ylabel('Speed (MB/s)')
+                self.ax1.grid(True)
+                self.ax1.legend()
+
+            # Plot audio speed
+            if self.audio_stats and 'timestamps' in self.audio_stats and 'speeds' in self.audio_stats:
+                speeds_mb = [s / (1024 * 1024) for s in self.audio_stats['speeds']]
+                if self.audio_only:
+                    # If audio only, use the first graph
+                    self.ax1.plot(self.audio_stats['timestamps'], speeds_mb, 'g-', label='Audio Speed (MB/s)')
+                    self.ax1.set_ylabel('Speed (MB/s)')
+                    self.ax1.grid(True)
+                    self.ax1.legend()
                 else:
-                    self.audio_cancel.configure(text="Open", command=lambda: self._on_open(self.filepath))
+                    # If both video and audio, use the second graph
+                    self.ax2.plot(self.audio_stats['timestamps'], speeds_mb, 'g-', label='Audio Speed (MB/s)')
+                    self.ax2.set_xlabel('Time (s)')
+                    self.ax2.set_ylabel('Speed (MB/s)')
+                    self.ax2.grid(True)
+                    self.ax2.legend()
+
+            self.canvas.draw()
+
+        except Exception as e:
+            print(f"Error updating graphs: {e}")
             
-            # Otherwise clamp progress between 0-100
-            progress = min(100, max(0, progress))
-            
-            # Update progress based on component
-            if component == 'video':
-                self.video_progress = progress
-                self.video_size = format_size
-                self.video_bar.set(progress / 100)
-                if speed:
-                    self.video_speed.configure(text=speed)
-                if text:
-                    self.video_label.configure(text=text)
+    def update_progress(self, text=None, progress=None, component=None, filepath=None, stats=None, speed=None, downloaded_size=None, total_size=None):
+        """Update progress bar and status"""
+        try:
+            print(f"YouTube progress bar update called: progress={progress}, component={component}")
+            # Initialize progress values if not set
+            if not hasattr(self, 'video_progress'):
+                self.video_progress = 0
+            if not hasattr(self, 'audio_progress'):
+                self.audio_progress = 0
+                
+            if component == "video" and not self.audio_only:
+                print(f"Updating video progress: {progress}")
+                if progress is not None:
+                    self.video_progress = progress
+                    self.video_progress_bar.set(progress / 100.0)
+                    status_text = f"{progress:.1f}%"
+                    if speed:
+                        status_text += f" • {speed}/s"
+                    if total_size and downloaded_size:
+                        status_text += f" • {self._format_size(downloaded_size)}/{self._format_size(total_size)}"
+                    self.video_status.configure(text=status_text)
+                if filepath:
+                    self.video_filepath = filepath
+                if stats:
+                    self.video_stats = stats
+                    if self.expanded:
+                        self._update_video_statistics(stats)
+                        self._update_graphs()
+
+            elif component == "audio":
+                print(f"Updating audio progress: {progress}")
+                if progress is not None:
+                    self.audio_progress = progress
+                    self.audio_progress_bar.set(progress / 100.0)
+                    status_text = f"{progress:.1f}%"
+                    if speed:
+                        status_text += f" • {speed}/s"
+                    if total_size and downloaded_size:
+                        status_text += f" • {self._format_size(downloaded_size)}/{self._format_size(total_size)}"
+                    self.audio_status.configure(text=status_text)
+                if filepath:
+                    self.audio_filepath = filepath
+                if stats:
+                    self.audio_stats = stats
+                    if self.expanded:
+                        self._update_audio_statistics(stats)
+                        self._update_graphs()
+
+            # Update title if provided
+            if text and not self.title_label.cget("text"):
+                print(f"Setting title to: {text}")
+                self.title_label.configure(text=text)
+
+            # Calculate combined progress
+            if self.audio_only:
+                self.combined_progress = self.audio_progress
             else:
-                self.audio_progress = progress
-                self.audio_size = format_size
-                self.audio_bar.set(progress / 100)
-                if speed:
-                    self.audio_speed.configure(text=speed)
-                if text:
-                    self.audio_label.configure(text=text)
-                    
-            # Force update
-            self.update_idletasks()
+                # If video is done but audio isn't started, count video as 100%
+                video_progress = 100 if self.video_progress >= 100 else self.video_progress
+                # If audio is done but video isn't started, count audio as 100%
+                audio_progress = 100 if self.audio_progress >= 100 else self.audio_progress
+                self.combined_progress = (video_progress + audio_progress) / 2
             
+            print(f"Combined progress: {self.combined_progress}")
+            
+            # Update button state if download is complete
+            if self.combined_progress >= 100:
+                print("Download complete, updating button")
+                self.action_button.configure(
+                    text="Open", 
+                    command=lambda: self._open_file(self.audio_filepath if self.audio_only else self.video_filepath)
+                )
+
         except Exception as e:
             print(f"Error updating progress: {e}")
             
+    def _open_file(self, filepath):
+        """Open the downloaded file"""
+        if not filepath or not os.path.exists(filepath):
+            messagebox.showerror("Error", "File not found")
+            return
+            
+        try:
+            if os.name == 'nt':  # Windows
+                os.startfile(filepath)
+            else:  # Linux/Mac
+                subprocess.run(['xdg-open' if os.name == 'posix' else 'open', filepath])
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open file: {str(e)}")
+            
+    def _update_video_statistics(self, stats: dict):
+        """Update video statistics display"""
+        try:
+            if stats.get('peak_speed'):
+                self.video_peak_speed.configure(
+                    text=f"Peak: {self._format_speed(stats['peak_speed'])}/s"
+                )
+            if stats.get('avg_speed'):
+                self.video_avg_speed.configure(
+                    text=f"Avg: {self._format_speed(stats['avg_speed'])}/s"
+                )
+            if stats.get('total_time'):
+                self.video_time.configure(
+                    text=f"Time: {self._format_time(stats['total_time'])}"
+                )
+        except Exception as e:
+            print(f"Error updating video statistics: {e}")
+            
+    def _update_audio_statistics(self, stats: dict):
+        """Update audio statistics display"""
+        try:
+            if stats.get('peak_speed'):
+                self.audio_peak_speed.configure(
+                    text=f"Peak: {self._format_speed(stats['peak_speed'])}/s"
+                )
+            if stats.get('avg_speed'):
+                self.audio_avg_speed.configure(
+                    text=f"Avg: {self._format_speed(stats['avg_speed'])}/s"
+                )
+            if stats.get('total_time'):
+                self.audio_time.configure(
+                    text=f"Time: {self._format_time(stats['total_time'])}"
+                )
+        except Exception as e:
+            print(f"Error updating audio statistics: {e}")
+            
+    def _format_speed(self, speed):
+        """Format speed in bytes to human readable string"""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if speed < 1024:
+                return f"{speed:.1f}{unit}"
+            speed /= 1024
+        return f"{speed:.1f}TB"
+        
+    def _format_time(self, time):
+        """Format time in seconds to human readable string"""
+        minutes, seconds = divmod(time, 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        
     def _on_close(self):
         """Handle close button click"""
         try:
@@ -150,13 +370,12 @@ class YouTubeProgressBar(ctk.CTkFrame):
         except Exception as e:
             print(f"Error in close: {e}")
             
-    def _on_cancel(self, component):
+    def _on_cancel(self):
         """Handle cancel button click"""
         try:
             if self.cancel_callback:
-                # Disable both buttons immediately to prevent multiple clicks
-                self.video_cancel.configure(state="disabled")
-                self.audio_cancel.configure(state="disabled")
+                # Disable the button immediately to prevent multiple clicks
+                self.action_button.configure(state="disabled")
                 # Call the cancel callback
                 self.cancel_callback(self.download_id)
                 # Destroy the progress bar after a short delay
@@ -164,19 +383,18 @@ class YouTubeProgressBar(ctk.CTkFrame):
         except Exception as e:
             print(f"Error in cancel callback: {e}")
             
-    def _on_open(self, filepath):
-        """Open the downloaded file"""
-        if filepath:
-            try:
-                os.startfile(filepath)
-            except Exception as e:
-                print(f"Error opening file: {e}")
-                messagebox.showerror("Error", f"Could not open file: {e}")
-                
-    def _format_size(self, size: float) -> str:
-        """Format size in bytes to human readable string"""
+    def _format_size(self, size_bytes):
+        """Format size in bytes to human readable format"""
         for unit in ['B', 'KB', 'MB', 'GB']:
-            if size < 1024:
-                return f"{size:.1f}{unit}"
-            size /= 1024
-        return f"{size:.1f}TB"
+            if size_bytes < 1024:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024
+        return f"{size_bytes:.1f} TB"
+
+    def _on_enter(self, event):
+        """Handle mouse enter event"""
+        self.configure(border_color="#ffffff")  # Pure white
+        
+    def _on_leave(self, event):
+        """Handle mouse leave event"""
+        self.configure(border_color=self.cget("fg_color"))  # Match frame color

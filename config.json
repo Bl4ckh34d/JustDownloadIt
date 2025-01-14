@@ -1,0 +1,133 @@
+{
+    "WINDOW_WIDTH": 800,
+    "WINDOW_MIN_HEIGHT": 400,
+    "WINDOW_PADDING": 5,
+    "DEFAULT_THREADS": 8,
+    "MAX_THREADS": 64,
+    "DEFAULT_RETRY_ATTEMPTS": 5,
+    "DOWNLOAD_CHUNK_SIZE": 8192,
+    "WAIT_BETWEEN_RETRIES": 5,
+    "YOUTUBE_VIDEO_QUALITIES": [
+        "2160p",
+        "1440p",
+        "1080p",
+        "720p",
+        "480p",
+        "360p",
+        "240p",
+        "144p"
+    ],
+    "YOUTUBE_AUDIO_QUALITIES": [
+        "160k",
+        "128k",
+        "96k",
+        "70k",
+        "50k",
+        "48k"
+    ],
+    "DEFAULT_VIDEO_QUALITY": "720p",
+    "DEFAULT_AUDIO_QUALITY": "128k",
+    "PROGRESS_THICKNESS": 10,
+    "DOWNLOAD_FRAME_HEIGHT": 200,
+    "MAX_FILENAME_LENGTH": 29,
+    "YOUTUBE_COLOR": "#FF0000",
+    "REGULAR_COLOR": "#00FF00",
+    "ERROR_COLOR": "#FF0000",
+    "SUCCESS_COLOR": "#00FF00",
+    "YOUTUBE_PATTERNS": [
+        "youtube.com",
+        "youtu.be",
+        "youtube.com/shorts"
+    ],
+    "YOUTUBE_VIDEO_FORMATS": [
+        "2160p (4K)",
+        "1440p (2K)",
+        "1080p (HD)",
+        "720p",
+        "480p",
+        "360p",
+        "240p",
+        "144p"
+    ],
+    "YOUTUBE_AUDIO_FORMATS": [
+        "High (opus)",
+        "High (m4a)",
+        "Medium (opus)",
+        "Medium (m4a)",
+        "Low (opus)",
+        "Low (m4a)"
+    ],
+    "YOUTUBE_COMBINED_FORMATS": [
+        "Best available",
+        "1080p",
+        "720p",
+        "480p",
+        "360p",
+        "240p",
+        "144p"
+    ],
+    "YOUTUBE_FORMAT_IDS": {
+        "2160p": [
+            "313",
+            "401"
+        ],
+        "1440p": [
+            "271",
+            "400"
+        ],
+        "1080p": [
+            "137",
+            "248",
+            "399"
+        ],
+        "720p": [
+            "136",
+            "247",
+            "398"
+        ],
+        "480p": [
+            "135",
+            "244",
+            "397"
+        ],
+        "360p": [
+            "134",
+            "243",
+            "396"
+        ],
+        "240p": [
+            "133",
+            "242",
+            "395"
+        ],
+        "144p": [
+            "160",
+            "278",
+            "394"
+        ],
+        "high_opus": [
+            "251"
+        ],
+        "high_m4a": [
+            "140"
+        ],
+        "medium_opus": [
+            "250"
+        ],
+        "medium_m4a": [
+            "139"
+        ],
+        "low_opus": [
+            "249"
+        ],
+        "low_m4a": [
+            "599"
+        ]
+    },
+    "QUALITY_RANKS": {
+        "high": 3,
+        "medium": 2,
+        "low": 1,
+        "ultralow": 0
+    }
+}

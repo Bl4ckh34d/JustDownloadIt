@@ -1,3 +1,27 @@
+"""
+Error handling utilities for JustDownloadIt.
+
+This module provides custom exceptions and error handling functions used throughout the application.
+It standardizes error handling and provides user-friendly error messages.
+
+Exceptions:
+    DownloaderError: Base exception for all downloader errors
+    InvalidURLError: Invalid URL format or scheme
+    UnsupportedURLError: URL scheme not supported
+    NetworkError: Network-related errors
+    FileSystemError: File system operation errors
+    YouTubeError: YouTube-specific errors
+    CancellationError: Download cancellation errors
+
+Functions:
+    handle_download_error: Convert various exceptions to appropriate downloader errors
+
+Dependencies:
+    - logging: Error logging
+"""
+
+import logging
+
 class DownloaderError(Exception):
     """Base class for downloader exceptions"""
     pass
@@ -35,10 +59,16 @@ class CancellationError(DownloaderError):
     pass
 
 def handle_download_error(error: Exception) -> tuple[str, str]:
-    """Convert exceptions to user-friendly messages
+    """
+    Handle download errors and return appropriate error messages.
     
+    Args:
+        error (Exception): The exception that occurred during download
+        
     Returns:
-        tuple[str, str]: (title, message) for display in message box
+        tuple[str, str]: A tuple containing (error type, error message)
+            - error type: Short description of the error type (e.g., "Network Error")
+            - error message: Detailed error message for display to user
     """
     if isinstance(error, InvalidURLError):
         return "Invalid URL", str(error)
