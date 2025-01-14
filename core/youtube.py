@@ -51,6 +51,7 @@ from utils.logger import DownloaderLogger
 from utils.file_utils import sanitize_filename
 from .config import Config
 from .downloader import Downloader
+from .download_state import DownloadState
 
 def get_youtube_cookies():
     """
@@ -179,6 +180,7 @@ class YouTubeDownloader(Downloader):
         self.logger = DownloaderLogger.get_logger()
         self._completion_callback = None
         self.download_id = str(uuid.uuid4())  # Generate a unique download ID
+        self.video_title = None
         
         # Parse quality into video and audio components
         quality_parts = preferred_quality.split(" + ")
@@ -210,92 +212,62 @@ class YouTubeDownloader(Downloader):
         
     def _extract_formats(self, url: str) -> tuple[Optional[dict], Optional[dict]]:
         """
-        Extract video and audio formats from YouTube URL.
+        Extract available formats from YouTube URL.
         
         Args:
-            url (str): YouTube video URL
+            url: YouTube URL
             
         Returns:
-            tuple[Optional[dict], Optional[dict]]: Selected video and audio formats
-            
-        Raises:
-            YouTubeError: If format extraction fails
+            tuple: (video_format, audio_format)
         """
         try:
-            # Extract available formats
-            ydl = yt_dlp.YoutubeDL({'quiet': True})
-            info = ydl.extract_info(url, download=False)
-            formats = info.get('formats', [])
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False
+            }
             
-            # Filter formats
-            video_formats = []
-            audio_formats = []
-            
-            for f in formats:
-                if f.get('vcodec') != 'none' and f.get('acodec') == 'none':
-                    video_formats.append(f)
-                elif f.get('acodec') != 'none' and f.get('vcodec') == 'none':
-                    audio_formats.append(f)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # Extract video info
+                info = ydl.extract_info(url, download=False)
+                self.video_title = info.get('title', 'Unknown Title')
+                
+                # Get available formats
+                formats = info.get('formats', [])
+                
+                # Find best audio format
+                audio_format = None
+                for f in formats:
+                    if f.get('acodec', 'none') != 'none' and f.get('vcodec') == 'none':
+                        if not audio_format or f.get('abr', 0) > audio_format.get('abr', 0):
+                            audio_format = f
+                
+                if self.audio_only:
+                    return None, audio_format
                     
-            if not video_formats and not audio_formats:
-                raise YouTubeError("No suitable formats found")
+                # Find best video format based on quality preference
+                video_format = None
+                target_height = int(self.video_quality.replace('p', '')) if self.video_quality != 'highest' else float('inf')
                 
-            # Sort formats by quality
-            video_formats.sort(key=lambda x: (x.get('height', 0) or 0, x.get('filesize', 0) or 0), reverse=True)
-            audio_formats.sort(key=lambda x: (x.get('abr', 0) or 0, x.get('filesize', 0) or 0), reverse=True)
-            
-            # Handle audio-only downloads
-            if self.audio_only:
-                return None, self._select_audio_format(audio_formats)
+                for f in formats:
+                    if f.get('vcodec', 'none') != 'none':
+                        height = f.get('height', 0)
+                        
+                        # For highest quality, take highest resolution
+                        if self.video_quality == 'highest':
+                            if not video_format or height > video_format.get('height', 0):
+                                video_format = f
+                                
+                        # For specific quality, take closest without going over
+                        else:
+                            if height <= target_height:
+                                if not video_format or height > video_format.get('height', 0):
+                                    video_format = f
                 
-            # Select video format based on quality preference
-            video_format = None
-            if self.video_quality is None or self.video_quality.lower() == 'highest':
-                # Choose highest quality available
-                video_format = video_formats[0] if video_formats else None
-            else:
-                # Try to match requested quality
-                target_height = int(self.video_quality.rstrip('p'))
-                # Find the closest match that doesn't exceed target
-                closest_format = None
-                min_diff = float('inf')
-                for fmt in video_formats:
-                    height = fmt.get('height', 0) or 0
-                    if height <= target_height:
-                        diff = target_height - height
-                        if diff < min_diff:
-                            min_diff = diff
-                            closest_format = fmt
-                video_format = closest_format or video_formats[-1]  # Use lowest if no match found
+                return video_format, audio_format
                 
-            # Select audio format
-            audio_format = self._select_audio_format(audio_formats)
-                
-            return video_format, audio_format
-            
         except Exception as e:
-            raise YouTubeError(f"Failed to extract video formats: {str(e)}")
-
-    def _select_audio_format(self, audio_formats: list) -> Optional[dict]:
-        """
-        Select the best audio format from available formats.
-        
-        Args:
-            audio_formats (list): List of available audio formats
-            
-        Returns:
-            Optional[dict]: Selected audio format or None if no suitable format found
-        """
-        if not audio_formats:
-            return None
-            
-        # Prefer m4a format with highest bitrate
-        m4a_formats = [f for f in audio_formats if f.get('ext') == 'm4a']
-        if m4a_formats:
-            return m4a_formats[0]  # Already sorted by bitrate
-            
-        # Otherwise use highest bitrate format
-        return audio_formats[0]
+            raise YouTubeError(f"Failed to extract video formats: {e}")
 
     def _download(self, url: str, destination: str):
         """
@@ -481,14 +453,13 @@ class YouTubeDownloader(Downloader):
                     
                     # Call progress callback with component-specific progress
                     if self.progress_callback:
+                        state = DownloadState.DOWNLOADING if d['status'] == 'downloading' else DownloadState.FINISHED
                         self.progress_callback(
-                            self.download_id,
-                            progress,
-                            DownloadState.DOWNLOADING if d['status'] == 'downloading' else DownloadState.FINISHED,
-                            speed_str,
-                            f"Downloading {'audio' if is_audio else 'video'}",
-                            total,
-                            downloaded,
+                            progress=progress,
+                            speed=speed_str,
+                            text=f"Downloading {self.video_title} ({'audio' if is_audio else 'video'})",
+                            total_size=total,
+                            downloaded_size=downloaded,
                             stats={
                                 'peak_speed': speed,
                                 'avg_speed': speed,
@@ -496,6 +467,7 @@ class YouTubeDownloader(Downloader):
                                 'timestamps': [],
                                 'speeds': []
                             },
+                            state=state,
                             component="audio" if self.audio_only or is_audio else "video"
                         )
                         
@@ -533,14 +505,13 @@ class YouTubeDownloader(Downloader):
             # Send final progress update
             if self.progress_callback:
                 self.progress_callback(
-                    self.download_id,
-                    100.0,
-                    DownloadState.FINISHED,
-                    "",
-                    f"{'Audio' if is_audio else 'Video'} download complete",
-                    self._current_progress['total'],
-                    self._current_progress['total'],
+                    progress=100.0,
+                    speed="",
+                    text=f"{'Audio' if is_audio else 'Video'} download complete",
+                    total_size=self._current_progress['total'],
+                    downloaded_size=self._current_progress['total'],
                     stats=None,
+                    state=DownloadState.FINISHED,
                     component="audio" if self.audio_only or is_audio else "video"
                 )
                 
@@ -578,13 +549,11 @@ class YouTubeDownloader(Downloader):
                 text = f"Downloading {self._format_size(downloaded)}/{self._format_size(total)}"
                 
                 self.progress_callback(
-                    self.download_id,
-                    progress,
-                    DownloadState.DOWNLOADING,
-                    speed_str,
-                    text,
-                    total,
-                    downloaded,
+                    progress=progress,
+                    speed=speed_str,
+                    text=text,
+                    total_size=total,
+                    downloaded_size=downloaded,
                     stats={
                         'peak_speed': speed,
                         'avg_speed': speed,
@@ -592,19 +561,19 @@ class YouTubeDownloader(Downloader):
                         'timestamps': [],
                         'speeds': []
                     },
+                    state=DownloadState.DOWNLOADING,
                     component="audio" if self.audio_only or is_audio else "video"
                 )
                 
             elif status == 'finished':
                 self.progress_callback(
-                    self.download_id,
-                    100.0,
-                    DownloadState.FINISHED,
-                    "",
-                    "Download complete",
-                    format_size,
-                    format_size,
+                    progress=100.0,
+                    speed="",
+                    text="Download complete",
+                    total_size=format_size,
+                    downloaded_size=format_size,
                     stats=None,
+                    state=DownloadState.FINISHED,
                     component="audio" if self.audio_only or is_audio else "video"
                 )
                 

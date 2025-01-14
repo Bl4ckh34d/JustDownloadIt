@@ -219,7 +219,7 @@ class YouTubeProgressBar(ctk.CTkFrame):
         except Exception as e:
             print(f"Error updating graphs: {e}")
             
-    def update_progress(self, text=None, progress=None, component=None, filepath=None, stats=None, speed=None, downloaded_size=None, total_size=None):
+    def update_progress(self, text=None, progress=None, component=None, filepath=None, stats=None, speed=None, downloaded_size=None, total_size=None, state=None):
         """Update progress bar and status"""
         try:
             print(f"YouTube progress bar update called: progress={progress}, component={component}")
@@ -228,7 +228,7 @@ class YouTubeProgressBar(ctk.CTkFrame):
                 self.video_progress = 0
             if not hasattr(self, 'audio_progress'):
                 self.audio_progress = 0
-                
+            
             if component == "video" and not self.audio_only:
                 print(f"Updating video progress: {progress}")
                 if progress is not None:
@@ -270,7 +270,8 @@ class YouTubeProgressBar(ctk.CTkFrame):
             # Update title if provided
             if text and not self.title_label.cget("text"):
                 print(f"Setting title to: {text}")
-                self.title_label.configure(text=text)
+                truncated_title = self._truncate_title(text)
+                self.title_label.configure(text=truncated_title)
 
             # Calculate combined progress
             if self.audio_only:
@@ -358,6 +359,12 @@ class YouTubeProgressBar(ctk.CTkFrame):
         minutes, seconds = divmod(time, 60)
         hours, minutes = divmod(minutes, 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        
+    def _truncate_title(self, title: str, max_length: int = 120) -> str:
+        """Truncate title if longer than max_length"""
+        if len(title) > max_length:
+            return title[:max_length] + "..."
+        return title
         
     def _on_close(self):
         """Handle close button click"""

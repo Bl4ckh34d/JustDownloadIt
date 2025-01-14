@@ -422,7 +422,15 @@ class DownloaderApp:
                 kwargs={
                     'quality': quality,
                     'audio_quality': audio_quality,
-                    'audio_only': audio_only
+                    'audio_only': audio_only,
+                    'on_progress': lambda *args, **kwargs: self._do_gui_update(
+                        download_id,
+                        *args,
+                        is_youtube=True,
+                        is_audio=audio_only,
+                        **kwargs
+                    ),
+                    'threads': self.threads_var.get()
                 }
             )
             thread.daemon = True
@@ -552,7 +560,8 @@ class DownloaderApp:
                             stats=stats,
                             speed=speed,
                             downloaded_size=downloaded_size,
-                            total_size=total_size
+                            total_size=total_size,
+                            state=state
                         )
                     else:
                         self.download_frame.update_progress(
