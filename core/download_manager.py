@@ -1,28 +1,35 @@
 """
-Download manager for JustDownloadIt.
+Download Manager Component for JustDownloadIt.
 
-This module provides the DownloadManager class which manages all download operations.
-It handles both regular downloads and YouTube downloads, providing a unified interface
-for progress tracking and download management.
+This module implements the core download management system, providing a robust and flexible
+download handling infrastructure for both regular HTTP(S) downloads and YouTube content.
 
-Features:
-    - Multi-threaded downloads with configurable thread count
-    - YouTube video downloads with quality selection
-    - Progress tracking and callback system
-    - Download cancellation and cleanup
-    - Error handling and retry logic
-    - Unified download ID generation
-    - Active download tracking
+Key Features:
+    - Multi-threaded download management (configurable thread count)
+    - Unified interface for regular and YouTube downloads
+    - Real-time progress tracking and status updates
+    - Download pause, resume, and cancellation support
+    - Automatic retry mechanism with configurable attempts
+    - Comprehensive error handling and recovery
+    - Download state persistence
+    - Memory-efficient download queuing
+    - Concurrent download limiting
 
 Classes:
-    DownloadManager: Main class that manages all download operations
+    DownloadTracker: Manages active download sessions and their states
+    DownloadManager: Core class orchestrating all download operations
 
 Dependencies:
     - core.downloader: Base download functionality
-    - core.youtube: YouTube download handling
+    - core.youtube: YouTube-specific download handling
     - core.config: Application configuration
-    - core.download_state: Download state tracking
+    - core.download_state: Download state management
     - utils.errors: Error handling utilities
+    - utils.url_utils: URL validation and processing
+
+Thread Safety:
+    All public methods are thread-safe and can be called from any thread.
+    Internal state is protected using threading primitives.
 """
 
 from pathlib import Path

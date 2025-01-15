@@ -1,24 +1,57 @@
 """
-Main GUI application for JustDownloadIt.
+JustDownloadIt GUI Application.
 
-This module contains the DownloaderApp class which manages the entire GUI application.
-It handles user input, download management, and progress updates.
+This module implements the main graphical user interface for JustDownloadIt,
+providing an intuitive and responsive interface for managing downloads.
 
-Key Components:
-    - URL Input: Text area for entering download URLs
-    - Download Settings: Thread count and format selection for YouTube
-    - Progress Display: Shows download progress with speed and ETA
-    - Download Management: Start, cancel, and clear downloads
+Key Features:
+    - Modern and responsive UI design
+    - Real-time download management
+        - Progress tracking
+        - Speed monitoring
+        - ETA calculation
+    - Multi-download support
+        - Parallel downloads
+        - Queue management
+        - Priority handling
+    - Format customization
+        - Quality selection
+        - Format preferences
+        - Audio options
+    - User preferences
+        - Download location
+        - Thread count
+        - Default settings
+    - Clipboard integration
+        - URL detection
+        - Batch processing
+    - Error handling
+        - User-friendly messages
+        - Recovery suggestions
+        - Detailed logging
 
-Classes:
-    DownloaderApp: Main application class that manages the GUI and downloads
+Components:
+    DownloaderApp: Main application window and controller
+        - URL management
+        - Download control
+        - Settings interface
+        - Progress display
+        - Status updates
 
 Dependencies:
-    - customtkinter: Modern themed tkinter widgets
-    - core.download_manager: Backend download management
-    - core.download_state: Download state tracking
-    - core.config: Application configuration
-    - gui.download_frame: Download progress display
+    Required:
+        - customtkinter: Modern UI widgets
+        - tkinter: Base GUI toolkit
+    Internal:
+        - core.download_manager: Download backend
+        - core.config: Settings management
+        - gui.download_frame: Progress display
+        - utils.url_utils: URL processing
+        - utils.errors: Error handling
+
+Thread Safety:
+    GUI updates are marshalled to the main thread
+    to ensure thread-safe operation.
 """
 
 from pathlib import Path

@@ -1,28 +1,43 @@
 """
-File system utilities for JustDownloadIt.
+File System Utilities for JustDownloadIt.
 
-This module provides comprehensive file system operations used throughout the application.
-It handles file operations, path manipulation, temporary files, and validation.
+This module provides a comprehensive set of file system operations designed
+for reliable and secure file handling in download operations. It implements
+best practices for file management, path manipulation, and system interaction.
 
-Functions:
-    - File Operations:
-        - create_temp_file: Create temporary file
-        - cleanup_temp_file: Clean up temporary file
-        - move_to_destination: Move file to destination
-        - ensure_dir: Ensure directory exists
-        - get_free_space: Get free space in directory
-        - is_file_complete: Check if file is complete
-        - cleanup_partial_downloads: Clean up partial downloads
-        - calculate_file_hash: Calculate file hash
+Key Features:
+    - Secure file operations with proper permissions
+    - Atomic file operations where possible
+    - Path sanitization and validation
+    - Temporary file management
+    - File integrity verification
+    - Space management and monitoring
+    - Cross-platform compatibility
+    - Unicode filename support
+
+Core Functions:
+    File Operations:
+        - create_temp_file: Create secure temporary files
+        - cleanup_temp_file: Safe temporary file cleanup
+        - move_to_destination: Atomic file move operations
+        - ensure_dir: Directory creation with permissions
+        - get_free_space: Disk space monitoring
+        - is_file_complete: File integrity verification
+        - cleanup_partial_downloads: Incomplete download cleanup
+        - calculate_file_hash: File checksum generation
         
-    - Path Manipulation:
-        - sanitize_filename: Remove invalid characters from filename
-        - get_unique_filename: Get unique filename
-        - get_safe_path: Get safe path that doesn't exist
-        - get_download_filename: Extract filename from URL
+    Path Management:
+        - sanitize_filename: Filename character sanitization
+        - get_unique_filename: Collision-free filename generation
+        - get_safe_path: Safe path resolution
+        - get_download_filename: URL to filename extraction
         
-    - File Listing:
-        - list_downloads: List downloaded files
+    File Discovery:
+        - list_downloads: Download directory enumeration
+
+Thread Safety:
+    All functions are thread-safe and can be called concurrently.
+    File operations use appropriate locking mechanisms.
 """
 
 import os

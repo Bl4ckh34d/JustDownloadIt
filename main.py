@@ -1,21 +1,34 @@
 """
-Entry point for JustDownloadIt application.
+JustDownloadIt Application Entry Point.
 
-This module initializes and runs the main application window.
-It handles signal interrupts (Ctrl+C) for graceful shutdown.
+This module serves as the main entry point for the JustDownloadIt application,
+handling initialization, runtime management, and graceful shutdown procedures.
 
-Features:
-    - Application initialization
-    - Signal handling
-    - Graceful shutdown
+Key Responsibilities:
+    - Application lifecycle management
+    - Signal handling (SIGINT/SIGTERM)
+    - Exception handling and logging
+    - Resource cleanup on exit
+    - GUI initialization
+    - Configuration loading
 
-Functions:
-    signal_handler: Handles Ctrl+C interrupts
-    main: Creates and runs the application
+Components:
+    - Signal Handlers: Manage system signals for clean shutdown
+    - Main Function: Application initialization and runtime
+    - Exception Handlers: Global exception management
+    - Resource Management: Ensure proper cleanup
 
 Dependencies:
     - gui.app: Main application window
-    - signal: Signal handling
+    - signal: System signal handling
+    - sys: System-level operations
+
+Usage:
+    Run this module directly to start the application:
+    $ python main.py
+    
+    The application can be terminated gracefully using Ctrl+C,
+    which will trigger proper cleanup of all resources.
 """
 
 import signal

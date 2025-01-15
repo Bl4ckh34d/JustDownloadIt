@@ -1,5 +1,53 @@
 """
-Download frame for displaying active downloads.
+Download Progress Display Component.
+
+This module implements a scrollable frame for displaying and managing
+active downloads, providing real-time progress information and controls.
+
+Key Features:
+    - Dynamic progress display
+        - Download progress percentage
+        - Speed and ETA
+        - File size information
+    - Download-specific controls
+        - Cancel button
+        - Close button
+        - Retry option
+    - Visual status indicators
+        - Progress colors
+        - Status icons
+        - Error highlighting
+    - Download type handling
+        - Regular downloads
+        - YouTube downloads
+            - Video progress
+            - Audio progress
+            - Merge status
+    - Responsive layout
+        - Auto-scroll
+        - Dynamic resizing
+        - Overflow handling
+
+Components:
+    DownloadFrame: Main container for download items
+        - Download item management
+        - Layout organization
+        - Event handling
+        - State tracking
+
+Dependencies:
+    Required:
+        - customtkinter: Modern UI components
+        - tkinter: Base GUI toolkit
+    Internal:
+        - widgets.progress_bar: Standard progress display
+        - widgets.progress_bar_yt: YouTube-specific progress
+        - core.download_state: Download state management
+        - utils.url_utils: URL type detection
+
+Thread Safety:
+    All UI updates are performed on the main thread
+    to ensure thread-safe operation.
 """
 
 import customtkinter as ctk

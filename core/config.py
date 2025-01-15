@@ -1,22 +1,61 @@
 """
-Configuration management for JustDownloadIt.
+Configuration Management System for JustDownloadIt.
 
-This module provides the Config class which manages application-wide settings.
-It handles both default and user-specific configurations.
+This module implements a centralized configuration system that manages
+all application settings, from UI preferences to download parameters.
+
+Configuration Categories:
+    User Interface:
+        - Window dimensions and positioning
+        - Theme and appearance settings
+        - Layout customization
+        - Control visibility
+    
+    Download Settings:
+        - Thread count and limits
+        - Retry policies
+        - Chunk sizes
+        - Buffer management
+        - Timeout values
+    
+    YouTube Options:
+        - Video quality presets
+        - Audio quality options
+        - Format preferences
+        - Codec selections
+    
+    File Management:
+        - Download locations
+        - Temporary directories
+        - File naming patterns
+        - Space requirements
+    
+    Network Settings:
+        - Proxy configuration
+        - Connection limits
+        - Timeout values
+        - Bandwidth controls
 
 Features:
-    - Window dimensions and layout settings
-    - Download settings (threads, retries, chunk size)
-    - YouTube quality presets
-    - User configuration file management
-    - Theme and appearance settings
+    - Dynamic configuration loading
+    - User preference persistence
+    - Environment-aware defaults
+    - Type validation
+    - Migration support
+    - Secure storage
+    - Cross-platform paths
 
-Classes:
-    Config: Static configuration class with application settings
+Components:
+    Config: Static configuration class
+        - Default values
+        - User overrides
+        - Validation rules
+        - Migration logic
 
-Dependencies:
-    - pathlib: Path manipulation
-    - json: Configuration file parsing
+File Structure:
+    - config.json: User preferences
+    - defaults.json: Factory settings
+    - schema.json: Configuration validation
 """
 
 from pathlib import Path

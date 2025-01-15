@@ -1,24 +1,43 @@
 """
-Error handling utilities for JustDownloadIt.
+Error Handling System for JustDownloadIt.
 
-This module provides custom exceptions and error handling functions used throughout the application.
-It standardizes error handling and provides user-friendly error messages.
+This module implements a comprehensive error handling framework that standardizes
+error management across the application. It provides structured error reporting,
+user-friendly messages, and recovery mechanisms.
 
-Features:
-    - Custom exception hierarchy
-    - Error context information
-    - User-friendly error messages
-    - Error recovery strategies
-    - Error logging integration
+Key Components:
+    - Hierarchical exception system
+    - Contextual error information
+    - Standardized error reporting
+    - Integrated logging system
+    - User-friendly message formatting
+    - Error recovery suggestions
+    - Error state persistence
 
-Classes:
-    DownloaderError: Base class for all downloader errors
-    URLError: Base class for URL-related errors
-    NetworkError: Network-related errors
-    FileSystemError: File system errors
-    YouTubeError: YouTube-specific errors
-    CancellationError: Download cancellation errors
-    CookieError: Cookie-related errors
+Exception Hierarchy:
+    DownloaderError
+    ├── URLError
+    │   ├── InvalidURLError
+    │   └── UnsupportedURLError
+    ├── NetworkError
+    ├── FileSystemError
+    ├── YouTubeError
+    ├── RetryExceededError
+    ├── CancellationError
+    └── CookieError
+
+Error Context:
+    Each error includes detailed context information:
+    - Error type and code
+    - Human-readable message
+    - Technical details
+    - Recovery suggestions
+    - Related metadata
+
+Usage:
+    Errors should be raised with appropriate context and caught
+    at the UI layer for user presentation. All errors are logged
+    automatically with full context information.
 """
 
 import logging
