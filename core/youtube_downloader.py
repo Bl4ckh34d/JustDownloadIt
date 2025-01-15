@@ -50,7 +50,8 @@ except ImportError:
 from utils.errors import YouTubeError, InvalidURLError, DownloaderError, CookieError
 from utils.logger import DownloaderLogger
 from utils.file_utils import sanitize_filename, get_unique_filename
-from utils.download_utils import format_size, validate_url
+from utils.url_utils import validate_url
+from utils.format_utils import format_size
 from .config import Config
 from .regular_downloader import Downloader
 from .download_state import DownloadState

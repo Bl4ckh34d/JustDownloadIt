@@ -1,22 +1,82 @@
 """
 GUI utilities for JustDownloadIt.
 
-This module provides common utility functions used by GUI components.
+This module provides common GUI utilities and widgets used across
+the application's interface components.
 """
 
 import tkinter as tk
-from typing import Optional, Callable, Any, Dict
+from tkinter import messagebox
 import customtkinter as ctk
+from typing import Optional, Callable, Dict, Any
 from pathlib import Path
+import logging
 
-def create_tooltip(widget: tk.Widget, text: str) -> None:
-    """Create a tooltip for a widget.
+from .progress import format_size, format_speed, format_time
+from core.download_state import DownloadState
+
+class WidgetState:
+    """Base class for widget state management."""
+    
+    def __init__(self, **kwargs):
+        self._state = {}
+        self.set_state(**kwargs)
+    
+    def set_state(self, **kwargs) -> None:
+        """Update widget state."""
+        self._state.update(kwargs)
+    
+    def get_state(self, key: str, default: Any = None) -> Any:
+        """Get state value."""
+        return self._state.get(key, default)
+
+def show_error(title: str, message: str) -> None:
+    """Show error message box.
     
     Args:
-        widget: Widget to add tooltip to
+        title: Error title
+        message: Error message
+    """
+    messagebox.showerror(title, message)
+
+def show_warning(title: str, message: str) -> None:
+    """Show warning message box.
+    
+    Args:
+        title: Warning title
+        message: Warning message
+    """
+    messagebox.showwarning(title, message)
+
+def show_info(title: str, message: str) -> None:
+    """Show info message box.
+    
+    Args:
+        title: Info title
+        message: Info message
+    """
+    messagebox.showinfo(title, message)
+
+def ask_yes_no(title: str, message: str) -> bool:
+    """Show yes/no dialog.
+    
+    Args:
+        title: Dialog title
+        message: Dialog message
+        
+    Returns:
+        bool: True if user clicked Yes
+    """
+    return messagebox.askyesno(title, message)
+
+def create_tooltip(widget: tk.Widget, text: str) -> None:
+    """Create tooltip for widget.
+    
+    Args:
+        widget: Target widget
         text: Tooltip text
     """
-    def show_tooltip(event=None):
+    def show_tooltip(event):
         tooltip = tk.Toplevel()
         tooltip.wm_overrideredirect(True)
         tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
@@ -27,191 +87,87 @@ def create_tooltip(widget: tk.Widget, text: str) -> None:
         
         def hide_tooltip():
             tooltip.destroy()
-            
-        tooltip.bind('<Leave>', lambda e: hide_tooltip())
-        widget.bind('<Leave>', lambda e: hide_tooltip())
         
+        widget.tooltip = tooltip
+        widget.bind('<Leave>', lambda e: hide_tooltip())
+        tooltip.bind('<Leave>', lambda e: hide_tooltip())
+    
     widget.bind('<Enter>', show_tooltip)
 
-def create_scrollable_frame(master: Any, **kwargs) -> ctk.CTkScrollableFrame:
-    """Create a scrollable frame with consistent styling.
+def format_download_status(state: DownloadState, progress: float = 0,
+                         speed: Optional[float] = None,
+                         total_size: Optional[int] = None,
+                         downloaded_size: Optional[int] = None) -> Dict[str, str]:
+    """Format download status for display.
+    
+    Args:
+        state: Download state
+        progress: Download progress (0-100)
+        speed: Download speed in bytes/sec
+        total_size: Total file size in bytes
+        downloaded_size: Downloaded size in bytes
+        
+    Returns:
+        Dict[str, str]: Formatted status strings
+    """
+    status_color = {
+        DownloadState.QUEUED: "gray",
+        DownloadState.INITIALIZING: "blue",
+        DownloadState.DOWNLOADING: "blue",
+        DownloadState.PROCESSING: "orange",
+        DownloadState.COMPLETED: "green",
+        DownloadState.ERROR: "red",
+        DownloadState.CANCELLED: "red",
+        DownloadState.PAUSED: "orange"
+    }
+    
+    if total_size:
+        size_text = f"{format_size(downloaded_size)}/{format_size(total_size)}"
+    else:
+        size_text = format_size(downloaded_size) if downloaded_size else "0 B"
+    
+    return {
+        "color": status_color.get(state, "gray"),
+        "progress_text": f"{progress:.1f}%",
+        "speed_text": format_speed(speed) if speed else "0 B/s",
+        "size_text": size_text,
+        "state_text": state.name.title()
+    }
+
+def create_scrolled_frame(master: tk.Widget, **kwargs) -> ctk.CTkScrollableFrame:
+    """Create scrollable frame.
     
     Args:
         master: Parent widget
         **kwargs: Additional arguments for CTkScrollableFrame
         
     Returns:
-        CTkScrollableFrame: Configured scrollable frame
+        CTkScrollableFrame: Scrollable frame
     """
-    return ctk.CTkScrollableFrame(
-        master,
-        fg_color="transparent",
-        corner_radius=0,
-        **kwargs
-    )
+    frame = ctk.CTkScrollableFrame(master, **kwargs)
+    frame.pack(fill="both", expand=True, padx=5, pady=5)
+    return frame
 
-def create_button(master: Any, text: str, command: Callable, 
-                 width: int = 120, **kwargs) -> ctk.CTkButton:
-    """Create a button with consistent styling.
+def create_button_with_icon(master: tk.Widget, text: str, command: Callable,
+                          icon: Optional[str] = None, **kwargs) -> ctk.CTkButton:
+    """Create button with optional icon.
     
     Args:
         master: Parent widget
         text: Button text
         command: Button command
-        width: Button width
+        icon: Icon path (optional)
         **kwargs: Additional arguments for CTkButton
         
     Returns:
-        CTkButton: Configured button
+        CTkButton: Button widget
     """
-    return ctk.CTkButton(
-        master,
-        text=text,
-        command=command,
-        width=width,
-        **kwargs
-    )
-
-def create_entry(master: Any, width: int = 300, **kwargs) -> ctk.CTkEntry:
-    """Create an entry with consistent styling.
+    if icon:
+        try:
+            image = tk.PhotoImage(file=icon)
+            kwargs["image"] = image
+        except Exception as e:
+            logging.warning(f"Failed to load button icon {icon}: {e}")
     
-    Args:
-        master: Parent widget
-        width: Entry width
-        **kwargs: Additional arguments for CTkEntry
-        
-    Returns:
-        CTkEntry: Configured entry
-    """
-    return ctk.CTkEntry(
-        master,
-        width=width,
-        **kwargs
-    )
-
-def create_label(master: Any, text: str, **kwargs) -> ctk.CTkLabel:
-    """Create a label with consistent styling.
-    
-    Args:
-        master: Parent widget
-        text: Label text
-        **kwargs: Additional arguments for CTkLabel
-        
-    Returns:
-        CTkLabel: Configured label
-    """
-    return ctk.CTkLabel(
-        master,
-        text=text,
-        **kwargs
-    )
-
-def create_checkbox(master: Any, text: str, variable: tk.BooleanVar,
-                   command: Optional[Callable] = None, **kwargs) -> ctk.CTkCheckBox:
-    """Create a checkbox with consistent styling.
-    
-    Args:
-        master: Parent widget
-        text: Checkbox text
-        variable: Variable to bind to
-        command: Command to execute on toggle
-        **kwargs: Additional arguments for CTkCheckBox
-        
-    Returns:
-        CTkCheckBox: Configured checkbox
-    """
-    return ctk.CTkCheckBox(
-        master,
-        text=text,
-        variable=variable,
-        command=command,
-        **kwargs
-    )
-
-def create_option_menu(master: Any, values: list, variable: tk.StringVar,
-                      **kwargs) -> ctk.CTkOptionMenu:
-    """Create an option menu with consistent styling.
-    
-    Args:
-        master: Parent widget
-        values: List of values
-        variable: Variable to bind to
-        **kwargs: Additional arguments for CTkOptionMenu
-        
-    Returns:
-        CTkOptionMenu: Configured option menu
-    """
-    return ctk.CTkOptionMenu(
-        master,
-        values=values,
-        variable=variable,
-        **kwargs
-    )
-
-def create_slider(master: Any, from_: float, to: float,
-                 variable: tk.Variable, command: Optional[Callable] = None,
-                 **kwargs) -> ctk.CTkSlider:
-    """Create a slider with consistent styling.
-    
-    Args:
-        master: Parent widget
-        from_: Minimum value
-        to: Maximum value
-        variable: Variable to bind to
-        command: Command to execute on value change
-        **kwargs: Additional arguments for CTkSlider
-        
-    Returns:
-        CTkSlider: Configured slider
-    """
-    return ctk.CTkSlider(
-        master,
-        from_=from_,
-        to=to,
-        variable=variable,
-        command=command,
-        **kwargs
-    )
-
-def show_error(title: str, message: str) -> None:
-    """Show an error message box.
-    
-    Args:
-        title: Error title
-        message: Error message
-    """
-    tk.messagebox.showerror(title, message)
-
-def show_warning(title: str, message: str) -> None:
-    """Show a warning message box.
-    
-    Args:
-        title: Warning title
-        message: Warning message
-    """
-    tk.messagebox.showwarning(title, message)
-
-def show_info(title: str, message: str) -> None:
-    """Show an info message box.
-    
-    Args:
-        title: Info title
-        message: Info message
-    """
-    tk.messagebox.showinfo(title, message)
-
-def ask_directory(title: str = "Select Directory",
-                 initialdir: Optional[Path] = None) -> Optional[str]:
-    """Show directory selection dialog.
-    
-    Args:
-        title: Dialog title
-        initialdir: Initial directory
-        
-    Returns:
-        str: Selected directory path or None if cancelled
-    """
-    return tk.filedialog.askdirectory(
-        title=title,
-        initialdir=initialdir
-    )
+    button = ctk.CTkButton(master, text=text, command=command, **kwargs)
+    return button

@@ -40,6 +40,7 @@ from utils.errors import (
 )
 from utils.url_utils import check_link_type, clean_url
 from .config import Config
+from .download_task import DownloadTask
 from .regular_downloader import Downloader
 from .youtube_downloader import YouTubeDownloader
 from .download_state import DownloadState, DownloadProgress
@@ -96,33 +97,46 @@ class DownloadManager:
         self.progress_callback = None
         self.logger = logging.getLogger(__name__)
         
-    def start_download(self, url: str, **kwargs) -> str:
-        """Start a new download.
+    def start_download(self, url: str, output_dir: str, options: Dict = None) -> str:
+        """Start a new download task.
         
         Args:
             url (str): URL to download
-            **kwargs: Additional download options
-            
-        Returns:
-            str: Download ID
+            output_dir (str): Directory to save downloaded file
+            options (Dict, optional): Additional download options. Defaults to None.
         """
         try:
+            # Create download task
+            task = DownloadTask(
+                url=url,
+                output_dir=output_dir,
+                options=options or {}
+            )
+            
+            # Add task to queue
+            self.download_queue.put(task)
+            
+            # Start worker if not running
+            if not self.worker_thread or not self.worker_thread.is_alive():
+                self.worker_thread = threading.Thread(target=self._process_queue, daemon=True)
+                self.worker_thread.start()
+                
             # Generate download ID if not provided
-            download_id = kwargs.pop('download_id', self.generate_download_id(url))
+            download_id = options.get('download_id', self.generate_download_id(url))
             
             # Get or create downloader
-            downloader = kwargs.pop('downloader', None)
+            downloader = options.get('downloader', None)
             if not downloader:
                 # Create regular downloader for non-YouTube URLs
                 downloader = Downloader(
                     url=url,
                     download_dir=self.download_dir,
-                    threads=kwargs.pop('threads', Config.DEFAULT_THREADS)
+                    threads=options.get('threads', Config.DEFAULT_THREADS)
                 )
             
             # Set callbacks
-            if 'progress_callback' in kwargs:
-                downloader.set_progress_callback(kwargs['progress_callback'])
+            if 'progress_callback' in options:
+                downloader.set_progress_callback(options['progress_callback'])
             
             # Store in tracker
             self.tracker.add_download(url, download_id, downloader)
@@ -265,7 +279,7 @@ class DownloadManager:
             # Update download state
             if not download_id:
                 return
-                
+            
             self.logger.info(f"Progress update for {download_id}: {progress:.1f}% ({component})")
                 
             # Forward progress to GUI callback if set

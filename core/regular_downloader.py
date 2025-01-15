@@ -37,7 +37,8 @@ from utils.errors import (
 )
 from utils.logger import DownloaderLogger
 from utils.file_utils import sanitize_filename, get_unique_filename
-from utils.download_utils import validate_url
+from utils.download_utils import retry_on_network_error
+from utils.url_utils import validate_url
 from .config import Config
 from .download_state import DownloadState
 

@@ -1,177 +1,151 @@
 """
-Download utilities for JustDownloadIt.
+Download utilities for both regular and YouTube downloads.
 
-This module provides common utility functions used by both regular
-and YouTube downloaders.
+This module provides common utilities used by both regular and YouTube downloaders,
+including retry logic, stream handling, and download validation.
 """
 
-import re
+import os
+import time
+import logging
+import tempfile
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
-from datetime import datetime
-import threading
-from queue import Queue
-from urllib.parse import urlparse
-from utils.errors import InvalidURLError, UnsupportedURLError
+from typing import Optional, Callable, Any
+import shutil
 
-def calculate_download_stats(timestamps: List[float], 
-                           speeds: List[float],
-                           progress: List[float],
-                           downloaded: List[float]) -> Dict:
-    """Calculate download statistics.
+from .errors import DownloaderError, NetworkError
+from .progress import ProgressStats, ProgressTracker
+
+def create_temp_download(prefix: str = "download_") -> Path:
+    """Create a temporary download file.
     
     Args:
-        timestamps: List of timestamps
-        speeds: List of speeds in bytes/s
-        progress: List of progress percentages
-        downloaded: List of downloaded bytes
+        prefix: Prefix for temporary file
         
     Returns:
-        dict: Dictionary containing calculated statistics
+        Path: Path to temporary file
     """
-    if not timestamps or not speeds:
-        return {
-            'peak_speed': 0,
-            'avg_speed': 0,
-            'total_time': 0,
-            'eta': 0,
-            'total_size': 0
-        }
-        
-    peak_speed = max(speeds)
-    avg_speed = sum(speeds) / len(speeds)
-    total_time = timestamps[-1] - timestamps[0]
-    
-    # Calculate ETA based on recent speed
-    if progress and progress[-1] < 100 and speeds[-1] > 0:
-        remaining_bytes = (100 - progress[-1]) / 100 * downloaded[-1]
-        eta = remaining_bytes / speeds[-1]
-    else:
-        eta = 0
-        
-    return {
-        'peak_speed': peak_speed,
-        'avg_speed': avg_speed,
-        'total_time': total_time,
-        'eta': eta,
-        'total_size': downloaded[-1] if downloaded else 0
-    }
+    temp_fd, temp_path = tempfile.mkstemp(prefix=prefix)
+    os.close(temp_fd)
+    return Path(temp_path)
 
-def create_download_chunks(total_size: int, chunk_size: int, threads: int) -> List[Tuple[int, int]]:
-    """Create download chunks for multi-threaded downloading.
+def cleanup_temp_file(temp_path: Path) -> None:
+    """Safely cleanup a temporary file.
     
     Args:
-        total_size: Total file size in bytes
-        chunk_size: Size of each chunk in bytes
-        threads: Number of threads to use
+        temp_path: Path to temporary file
+    """
+    try:
+        if temp_path.exists():
+            temp_path.unlink()
+    except Exception as e:
+        logging.warning(f"Failed to cleanup temp file {temp_path}: {e}")
+
+def move_to_destination(temp_path: Path, dest_path: Path, 
+                       overwrite: bool = False) -> None:
+    """Move downloaded file to destination.
+    
+    Args:
+        temp_path: Path to temporary file
+        dest_path: Destination path
+        overwrite: Whether to overwrite existing file
+    """
+    if dest_path.exists() and not overwrite:
+        raise DownloaderError(f"Destination file already exists: {dest_path}")
+    
+    try:
+        shutil.move(str(temp_path), str(dest_path))
+    except Exception as e:
+        raise DownloaderError(f"Failed to move file to destination: {e}")
+
+def retry_on_network_error(func: Callable, 
+                         max_retries: int = 3,
+                         retry_delay: int = 5,
+                         **kwargs: Any) -> Any:
+    """Retry a function on network error.
+    
+    Args:
+        func: Function to retry
+        max_retries: Maximum number of retries
+        retry_delay: Delay between retries in seconds
+        **kwargs: Arguments to pass to function
         
     Returns:
-        list: List of (start, end) byte ranges for each chunk
-    """
-    chunks = []
-    bytes_per_thread = total_size // threads
-    
-    for i in range(threads):
-        start = i * bytes_per_thread
-        end = start + bytes_per_thread - 1 if i < threads - 1 else total_size - 1
-        
-        # Break large chunks into smaller ones
-        while start < end:
-            chunk_end = min(start + chunk_size - 1, end)
-            chunks.append((start, chunk_end))
-            start = chunk_end + 1
-            
-    return chunks
-
-def merge_download_chunks(chunks: List[Path], output_path: Path) -> None:
-    """Merge downloaded chunks into a single file.
-    
-    Args:
-        chunks: List of chunk file paths
-        output_path: Path to final output file
-    """
-    with output_path.open('wb') as outfile:
-        for chunk in chunks:
-            with chunk.open('rb') as infile:
-                while True:
-                    data = infile.read(8192)
-                    if not data:
-                        break
-                    outfile.write(data)
-            chunk.unlink()  # Delete chunk after merging
-
-def get_download_headers(url: str, resume_position: Optional[int] = None) -> Dict[str, str]:
-    """Get headers for download request.
-    
-    Args:
-        url: Download URL
-        resume_position: Byte position to resume from
-        
-    Returns:
-        dict: Headers dictionary
-    """
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    
-    if resume_position is not None:
-        headers['Range'] = f'bytes={resume_position}-'
-        
-    return headers
-
-def format_size(size: float) -> str:
-    """Format size in bytes to human readable string.
-    
-    Args:
-        size: Size in bytes
-        
-    Returns:
-        str: Formatted size string (e.g., "1.5 GB")
-    """
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if size < 1024.0:
-            if unit == 'B':
-                return f"{size:.0f} {unit}"
-            return f"{size:.2f} {unit}"
-        size /= 1024.0
-    return f"{size:.2f} PB"
-
-URL_PATTERN = re.compile(
-    r'^https?://'  # http:// or https://
-    r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain...
-    r'localhost|'  # localhost...
-    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
-    r'(?::\d+)?'  # optional port
-    r'(?:/?|[/?]\S+)$', re.IGNORECASE)
-
-def validate_url(url: str) -> None:
-    """Validate a URL string.
-    
-    Args:
-        url (str): URL to validate
+        Any: Function result
         
     Raises:
-        InvalidURLError: If URL is invalid
-        UnsupportedURLError: If URL scheme is not supported
+        NetworkError: If all retries fail
     """
-    # Clean the URL first
-    url = url.strip()
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return func(**kwargs)
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            continue
     
-    if not url:
-        raise InvalidURLError("URL cannot be empty")
+    raise NetworkError(f"Failed after {max_retries} attempts: {last_error}")
+
+def validate_download_path(path: Path) -> None:
+    """Validate download path.
+    
+    Args:
+        path: Path to validate
         
-    # Basic format check before parsing
-    if not url.startswith(('http://', 'https://')):
-        raise UnsupportedURLError("Only HTTP/HTTPS URLs are supported")
+    Raises:
+        DownloaderError: If path is invalid
+    """
+    if not path.parent.exists():
+        try:
+            path.parent.mkdir(parents=True)
+        except Exception as e:
+            raise DownloaderError(f"Failed to create download directory: {e}")
+    
+    if not os.access(path.parent, os.W_OK):
+        raise DownloaderError(f"No write permission for directory: {path.parent}")
+
+def get_unique_filename(directory: Path, filename: str) -> Path:
+    """Get unique filename in directory.
+    
+    Args:
+        directory: Target directory
+        filename: Desired filename
         
-    # Check URL format
-    if not URL_PATTERN.match(url):
-        raise InvalidURLError("Please enter a valid URL (e.g., https://example.com)")
+    Returns:
+        Path: Path with unique filename
+    """
+    base, ext = os.path.splitext(filename)
+    counter = 1
+    result_path = directory / filename
+    
+    while result_path.exists():
+        new_name = f"{base}_{counter}{ext}"
+        result_path = directory / new_name
+        counter += 1
+    
+    return result_path
+
+def sanitize_filename(filename: str) -> str:
+    """Sanitize filename by removing invalid characters.
+    
+    Args:
+        filename: Filename to sanitize
         
-    # Parse URL and check scheme
-    try:
-        parsed = urlparse(url)
-        if not parsed.netloc:  # Check if there's a valid domain
-            raise InvalidURLError("URL must contain a valid domain")
-    except Exception as e:
-        raise InvalidURLError(f"Invalid URL format: {str(e)}")
+    Returns:
+        str: Sanitized filename
+    """
+    # Replace invalid characters with underscores
+    invalid_chars = '<>:"/\\|?*'
+    for char in invalid_chars:
+        filename = filename.replace(char, '_')
+    
+    # Remove leading/trailing spaces and dots
+    filename = filename.strip('. ')
+    
+    # Ensure filename is not empty
+    if not filename:
+        filename = "download"
+    
+    return filename

@@ -32,10 +32,12 @@ import re
 from typing import Callable
 import time
 from datetime import datetime
+import os
 
-from utils.url_utils import clean_url, check_link_type, parse_urls
+from utils.url_utils import clean_url, check_link_type, parse_urls, extract_playlist_videos, URLType, validate_url, is_line_valid_url, remove_url_from_text
 from utils.errors import handle_download_error
 from core.download_manager import DownloadManager
+from core.download_task import DownloadTask
 from core.download_state import DownloadState
 from core.config import Config
 from gui.download_frame import DownloadFrame
@@ -226,37 +228,28 @@ class DownloaderApp(ctk.CTk):
             
         return target_path
         
-    def _on_url_input_change(self, event=None):
+    def _on_url_input_change(self, *args):
         """Handle URL input changes."""
-        urls = self.url_input.get("1.0", "end-1c").split()
+        # Get current URL input
+        text = self.url_input.get("1.0", "end-1c").strip()
         
-        has_regular = False
-        has_youtube = False
-        
-        for url in urls:
-            if check_link_type(url) == 'youtube':
-                has_youtube = True
-            else:
-                has_regular = True
+        # Check each line for valid URLs
+        valid_urls = []
+        for line in text.splitlines():
+            if is_line_valid_url(line):
+                valid_urls.append(clean_url(line))
                 
-        # Show/hide settings frame
-        if has_regular or has_youtube:
-            self.settings_frame.pack(padx=10, pady=5, fill="x", after=self.action_frame)
+        # Enable download button only if we have valid URLs
+        if valid_urls:
+            self.download_button.configure(state="normal")
+            # Show YouTube settings if any YouTube URLs present
+            has_youtube = any(check_link_type(url) in [URLType.YOUTUBE, URLType.YOUTUBE_PLAYLIST] 
+                            for url in valid_urls)
+            self._update_youtube_settings_visibility(has_youtube)
         else:
-            self.settings_frame.pack_forget()
-            
-        # Show/hide YouTube settings
-        if has_youtube:
-            self.youtube_settings.pack(fill="x", padx=5, pady=5)
-        else:
-            self.youtube_settings.pack_forget()
-            
-        # Show/hide regular settings
-        if has_regular:
-            self.regular_settings.pack(fill="x", padx=5, pady=5)
-        else:
-            self.regular_settings.pack_forget()
-            
+            self.download_button.configure(state="disabled")
+            self._update_youtube_settings_visibility(False)
+
     def _on_audio_only_toggle(self):
         """Handle audio only checkbox toggle."""
         if self.audio_only_var.get():
@@ -267,81 +260,122 @@ class DownloaderApp(ctk.CTk):
             
     def _on_download_click(self):
         """Handle download button click."""
-        urls = self.url_input.get("1.0", "end-1c").split()
-        if not urls:
-            return
-            
-        # Start download for each URL
-        for url in urls:
-            url = clean_url(url)
-            if not url:
+        text = self.url_input.get("1.0", "end-1c")
+        lines = text.splitlines()
+        
+        # Process lines and look for playlists
+        modified = False
+        new_lines = []
+        for line in lines:
+            line = line.strip()
+            if not is_line_valid_url(line):
+                new_lines.append(line)
                 continue
                 
-            # Start download in separate thread
-            thread = threading.Thread(
-                target=self._download_url,
-                args=(url,),
-                daemon=True
-            )
-            thread.start()
+            url = clean_url(line)
             
-    def _download_url(self, url: str):
-        """Start downloading a URL"""
-        try:
-            download_id = self.manager.generate_download_id(url)
-            
-            # Add download to frame (it will create appropriate progress bar)
-            self.download_frame.add_download(
-                download_id=download_id,
-                url=url,
-                on_cancel=self.on_cancel,
-                audio_only=self.audio_only_var.get() if check_link_type(url) == 'youtube' else False
-            )
-            
-            # Get target directory
-            target_dir = Path(self.target_dir_entry.get())
-            if not target_dir.exists():
-                target_dir.mkdir(parents=True)
-            
-            # Create progress callback that includes download_id
-            def progress_callback(progress: float, speed: str = "", text: str = "",
-                                total_size: float = 0, downloaded_size: float = 0,
-                                stats: dict = None, state: DownloadState = DownloadState.DOWNLOADING,
-                                **kwargs):
-                # Create a state object with all required attributes
-                class DownloadProgress:
-                    def __init__(self):
-                        self.state = state
-                        self.progress = progress
-                        self.speed = speed
-                        self.text = text
-                        self.downloaded_size = downloaded_size
-                        self.total_size = total_size
-                        self.component = kwargs.get('component', None)
-                
-                self.on_progress(download_id, DownloadProgress())
-            
-            # Start download based on URL type
-            if check_link_type(url) == 'youtube':
-                self.manager.download_youtube(
-                    url,
-                    quality=self.video_quality_var.get() if not self.audio_only_var.get() else None,
-                    audio_quality=self.audio_quality_var.get(),
-                    audio_only=self.audio_only_var.get(),
-                    threads=self.threads_var.get(),
-                    progress_callback=progress_callback
-                )
+            # Extract playlist videos if it's a playlist URL
+            if check_link_type(url) == URLType.YOUTUBE_PLAYLIST:
+                try:
+                    self.logger.info(f"Processing playlist URL: {url}")
+                    playlist_videos = extract_playlist_videos(url)
+                    if not playlist_videos:
+                        raise ValueError("No videos found in playlist")
+                        
+                    # Replace this line with the playlist videos
+                    new_lines.extend(playlist_videos)
+                    modified = True
+                    
+                    messagebox.showinfo(
+                        "Playlist Extracted",
+                        f"Successfully extracted {len(playlist_videos)} videos from playlist.\n"
+                        "Press Download again to start downloading the videos."
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to extract playlist: {e}")
+                    self.logger.exception("Full traceback:")
+                    messagebox.showerror(
+                        "Playlist Error",
+                        f"Failed to extract playlist videos: {str(e)}\n\n"
+                        "Please check if the playlist is public and accessible."
+                    )
+                    # Keep original line on error
+                    new_lines.append(line)
             else:
-                self.manager.download(
-                    url,
-                    download_dir=target_dir,
-                    progress_callback=progress_callback,
-                    threads=self.threads_var.get()
-                )
+                new_lines.append(line)
                 
+        # If we found and processed a playlist, update the text
+        if modified:
+            self.url_input.delete("1.0", "end")
+            self.url_input.insert("1.0", "\n".join(new_lines))
+            self._on_url_input_change()
+            return
+                
+        # No playlists found, process URLs normally
+        processed_urls = []
+        for line in lines:
+            if not is_line_valid_url(line):
+                continue
+            url = clean_url(line)
+            processed_urls.append(url)
+                
+        # Start download for each processed URL
+        for url in processed_urls:
+            try:
+                # Start download in separate thread
+                thread = threading.Thread(
+                    target=self._download_url,
+                    args=(url,),
+                    daemon=True
+                )
+                thread.start()
+            except Exception as e:
+                self.logger.error(f"Failed to start download for {url}: {e}")
+                self.logger.exception("Full traceback:")
+                messagebox.showerror(
+                    "Download Error",
+                    f"Failed to start download for {url}:\n{str(e)}"
+                )
+
+    def _download_url(self, url: str):
+        """Download a single URL"""
+        try:
+            # Get download type
+            download_type = check_link_type(url)
+            
+            # Get output directory
+            output_dir = self.target_dir_entry.get()
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+                
+            # Get download options
+            options = {}
+            if download_type in [URLType.YOUTUBE, URLType.YOUTUBE_PLAYLIST]:
+                options["format"] = self.video_quality_var.get() if not self.audio_only_var.get() else None
+                options["audio_only"] = self.audio_only_var.get()
+                options["quality"] = self.audio_quality_var.get()
+                
+            # Remove URL from input field
+            text = self.url_input.get("1.0", "end-1c")
+            new_text = remove_url_from_text(text, url)
+            self.url_input.delete("1.0", "end")
+            self.url_input.insert("1.0", new_text)
+            self._on_url_input_change()
+                
+            # Start download
+            self.manager.start_download(
+                url=url,
+                output_dir=output_dir,
+                options=options
+            )
+            
         except Exception as e:
             self.logger.error(f"Error starting download: {e}")
-            handle_download_error(e)
+            self.logger.exception("Unexpected error:")
+            messagebox.showerror(
+                "Download Error", 
+                f"Failed to download {url}:\n{str(e)}"
+            )
             
     def on_progress(self, download_id: str, state: DownloadState):
         """Handle download progress updates."""
@@ -371,6 +405,13 @@ class DownloaderApp(ctk.CTk):
         self.threads_value_label.configure(text=str(threads))
         self.threads_var.set(threads)
         
+    def _update_youtube_settings_visibility(self, visible: bool):
+        """Show/hide YouTube settings."""
+        if visible:
+            self.youtube_settings.pack(fill="x", padx=5, pady=5)
+        else:
+            self.youtube_settings.pack_forget()
+            
     def run(self):
         """
         Start the GUI.
